@@ -46,6 +46,20 @@ global float g_aliased_shimmer_delaysend;
 global float g_aliased_shimmer_reverbsend;
 global float g_granulator_delaysend;
 global float g_granulator_reverbsend;
+global float g_spectral_sines_delaysend;
+global float g_spectral_sines_reverbsend;
+
+// peak-detector (core) — the one shared FFT. It owns the band the peak search
+// runs over, since that describes the analysis every consumer sees.
+global float g_peak_detector_minfreq;
+global float g_peak_detector_maxfreq;
+global float g_peak_detector_thresh;    // relative floor under the loudest peak
+
+// spectral-sines — sounds a sine on each peak the detector publishes. It does
+// no analysis of its own; sines is just how many of them sing.
+global float g_spectral_sines_sines;     // 1..8, loudest peaks first
+global float g_spectral_sines_magtrack;  // 0 = flat, 1 = scaled by peak magnitude
+global float g_spectral_sines_mastervol;
 
 // burst-trigger — a momentary event, not a held value. Python sends a bang on
 // /trigger/burst the instant the trigger fires (GUI button now, a MIDI pad
@@ -159,6 +173,17 @@ global float g_granulator_mastervol;
 0.0 => g_aliased_shimmer_reverbsend;
 0.0 => g_granulator_delaysend;
 0.0 => g_granulator_reverbsend;
+0.0 => g_spectral_sines_delaysend;
+0.0 => g_spectral_sines_reverbsend;
+
+// peak-detector / spectral-sines — start where the test script was tuned:
+// searching 60..2000 Hz, with four peaks sounding.
+0.043 => g_peak_detector_minfreq;     // ~60 Hz in the 40..500 Hz range
+0.333 => g_peak_detector_maxfreq;     // ~2000 Hz in the 500..5000 Hz range
+0.2   => g_peak_detector_thresh;      // peaks must reach 10% of the loudest
+0.43  => g_spectral_sines_sines;      // 4 of 8
+0.75  => g_spectral_sines_magtrack;   // mostly follows each partial's strength
+0.5   => g_spectral_sines_mastervol;  // unity once mapped (0.5 -> 1.0)
 
 OscIn oin;
 OscMsg msg;
@@ -289,6 +314,20 @@ while( true )
             else if( param == "delaysend" )  v => g_granulator_delaysend;
             else if( param == "reverbsend" ) v => g_granulator_reverbsend;
             else if( param == "mastervol" )  v => g_granulator_mastervol;
+        }
+        else if( module == "peak-detector" )
+        {
+            if(      param == "minfreq" ) v => g_peak_detector_minfreq;
+            else if( param == "maxfreq" ) v => g_peak_detector_maxfreq;
+            else if( param == "thresh" )  v => g_peak_detector_thresh;
+        }
+        else if( module == "spectral-sines" )
+        {
+            if(      param == "sines" )      v => g_spectral_sines_sines;
+            else if( param == "magtrack" )   v => g_spectral_sines_magtrack;
+            else if( param == "delaysend" )  v => g_spectral_sines_delaysend;
+            else if( param == "reverbsend" ) v => g_spectral_sines_reverbsend;
+            else if( param == "mastervol" )  v => g_spectral_sines_mastervol;
         }
         // else: unknown module/param — ignored
     }

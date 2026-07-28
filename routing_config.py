@@ -110,6 +110,28 @@ MODULE_PARAMS = {
         # output — the bus's own level, this module's equivalent of mastervol
         ("returnvol", "hand_right_pinky_z"),
     ],
+    # Peak-detector: the shared spectral analysis, a core shred. It owns the
+    # band the peak search runs over, because that describes the analysis every
+    # consumer sees — not any one module's voicing.
+    "peak-detector": [
+        ("minfreq", "hand_left_index_y"),
+        ("maxfreq", "hand_left_middle_y"),
+        # how loud a peak must be relative to the loudest one to count at all
+        ("thresh",  "hand_left_ring_y"),
+    ],
+    # Spectral-sines: sounds a sine on each peak the detector publishes. It does
+    # no analysis of its own — sines is just how many of the published peaks
+    # (loudest first) actually sing.
+    "spectral-sines": [
+        ("sines",      "hand_right_index_y"),
+        # 0 = every sine equal, 1 = each in proportion to its partial's strength
+        ("magtrack",   "hand_left_index_y"),
+        # fx sends into the shared delay/reverb buses
+        ("delaysend",  "hand_right_thumb_x"),
+        ("reverbsend", "hand_left_thumb_x"),
+        # output
+        ("mastervol",  "hand_right_pinky_z"),
+    ],
     # Granulator: every param exposed. The landmark is only the default used if
     # the user switches that param to landmark mode — all start on the slider.
     "granulator": [
@@ -158,23 +180,45 @@ MODULE_PARAMS = {
 
 # Modules that are core shreds — always running, never added/removed via the
 # effects list. The GUI shows their sections whenever the VM is up.
-CORE_MODULES = ["input", "delay", "reverb"]
+CORE_MODULES = ["input", "peak-detector", "delay", "reverb"]
+
+# The Live Input window: the signal coming in, and the analysis of it. The peak
+# detector describes the input rather than producing sound, so it belongs here
+# rather than with the ensemble.
+INPUT_MODULES = ["input", "peak-detector"]
 
 # The shared fx buses, which get their own GUI window. They process what they
 # are sent rather than making sound of their own, so they don't belong with the
 # ensemble modules.
 SEND_FX_MODULES = ["delay", "reverb"]
 
+# Modules whose params are sliders only — no landmark routing offered. These are
+# set-and-forget settings (which input, what band to analyse) rather than
+# anything a performer would play, so the landmark columns would just be noise.
+# Nothing structural stops them being routed later: drop a name from this list
+# and it picks up the full landmark UI, since the resolve path is shared.
+SLIDER_ONLY_MODULES = ["input", "peak-detector"]
+
 # Per-param starting slider positions, for the params where the global 0.5
 # default would be wrong. Keyed by (module, param).
 #   - sends start closed, so nothing is drenched in fx on a fresh checkout
 #   - the delay times start at the 300/400 ms ping-pong offset the granulator
 #     used to have; equal times would collapse it to a plain mono delay
+#   - the detector starts on the band the test script was tuned at (60..2000 Hz)
+#     and spectral-sines voices four peaks, so it sounds as it did before the
+#     analysis moved to core
 SLIDER_DEFAULTS = {
     ("delay", "timeleft"): 0.26,    # ~300 ms in the 50..1000 ms range
     ("delay", "timeright"): 0.37,   # ~400 ms
     ("delay", "toreverb"): 0.0,
     ("reverb", "predelay"): 0.0,
+    ("peak-detector", "minfreq"): 0.043,  # ~60 Hz in the 40..500 Hz range
+    ("peak-detector", "maxfreq"): 0.333,  # ~2000 Hz in the 500..5000 Hz range
+    ("peak-detector", "thresh"): 0.2,     # peaks must reach 10% of the loudest
+    ("spectral-sines", "sines"): 0.43,    # 4 of 8
+    # Off zero: the weakest peaks are the high, fast-decaying, noisiest ones, and
+    # at magtrack 0 they sound as loud as the rock-solid fundamental.
+    ("spectral-sines", "magtrack"): 0.75,
 }
 for _module, _params in MODULE_PARAMS.items():
     for _param, _lm in _params:

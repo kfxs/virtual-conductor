@@ -290,7 +290,8 @@ class ConductorGUI:
         send_fx = routing_config.SEND_FX_MODULES
 
         input_entries = (
-            [("input", params_of["input"])] if vm and "input" in params_of else []
+            [(m, params_of[m]) for m in routing_config.INPUT_MODULES if m in params_of]
+            if vm else []
         )
         fx_entries = (
             [(m, params_of[m]) for m in send_fx if m in params_of] if vm else []
@@ -311,12 +312,9 @@ class ConductorGUI:
             )
 
         state_changed = False
-        # The Live Input window holds a single section named after the window
-        # itself, so it skips the collapsing header it would only duplicate.
         if self._render_module_window(
             "Live Input", input_entries,
             "Start the ChucK VM to control the input.",
-            headers=False,
         ):
             state_changed = True
         if self._render_module_window(
@@ -334,7 +332,7 @@ class ConductorGUI:
         # Push each param's resolved value (slider or landmark) to ChucK.
         self._send_routing_osc()
 
-    def _render_module_window(self, title, entries, empty_text, headers=True):
+    def _render_module_window(self, title, entries, empty_text):
         """Render one window holding a collapsible section per entry.
         Returns True if any routing value changed (so it gets persisted)."""
         state_changed = False
@@ -345,16 +343,14 @@ class ConductorGUI:
             imgui.text_disabled(empty_text)
         else:
             for module, params in entries:
-                if headers:
-                    # The triangle on a collapsing header minimizes/expands the
-                    # section.
-                    label = module.capitalize()
-                    header = imgui.collapsing_header(
-                        label, flags=imgui.TREE_NODE_DEFAULT_OPEN
-                    )
-                    expanded = header[0] if isinstance(header, tuple) else header
-                    if not expanded:
-                        continue
+                # The triangle on a collapsing header minimizes/expands the
+                # section.
+                header = imgui.collapsing_header(
+                    module.capitalize(), flags=imgui.TREE_NODE_DEFAULT_OPEN
+                )
+                expanded = header[0] if isinstance(header, tuple) else header
+                if not expanded:
+                    continue
                 if self._render_module_body(module, params):
                     state_changed = True
         imgui.end()
@@ -462,22 +458,24 @@ class ConductorGUI:
         Returns True if any routing value changed (so it gets persisted)."""
         state_changed = False
 
-        # Input is slider-only — no landmark routing for it.
-        if module == "input":
-            # Source selector: switch between the fake-theorbo (looped wav) and
-            # the live mic. Persisted on its own (not part of routing_state).
-            imgui.text("source")
-            imgui.same_line(60)
-            for src in routing_config.INPUT_SOURCES:
-                clicked = imgui.radio_button(
-                    f"{src}##input_source", self.input_source == src
-                )
-                if clicked and self.input_source != src:
-                    self.input_source = src
-                    routing_config.save_input_source(src)
-                imgui.same_line()
-            imgui.new_line()
-            imgui.separator()
+        # Some modules are slider-only — set-and-forget settings rather than
+        # anything you'd play with a hand, so they skip the landmark columns.
+        if module in routing_config.SLIDER_ONLY_MODULES:
+            if module == "input":
+                # Source selector: switch between the fake-theorbo (looped wav)
+                # and the live mic. Persisted on its own (not routing_state).
+                imgui.text("source")
+                imgui.same_line(60)
+                for src in routing_config.INPUT_SOURCES:
+                    clicked = imgui.radio_button(
+                        f"{src}##input_source", self.input_source == src
+                    )
+                    if clicked and self.input_source != src:
+                        self.input_source = src
+                        routing_config.save_input_source(src)
+                    imgui.same_line()
+                imgui.new_line()
+                imgui.separator()
 
             imgui.text_disabled("Param")
             imgui.same_line(60)

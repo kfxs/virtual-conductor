@@ -15,6 +15,7 @@ EFFECTS = {
     "Granulator": "chuck-scripts/modules/granulator.ck",
     "Burst-trigger": "chuck-scripts/modules/burst-trigger.ck",
     "Aliased-shimmer": "chuck-scripts/modules/aliased-shimmer.ck",
+    "Spectral-sines": "chuck-scripts/modules/spectral-sines.ck",
 }
 
 
@@ -35,12 +36,13 @@ class ChuckController:
         self.log.append("[VM] Starting ChucK VM...")
         # Core shreds, always running and never added/removed by the user.
         # Order matters: the router seeds every param global before anything
-        # reads it, and the delay patches into the reverb's input bus, so the
-        # reverb comes up first.
+        # reads it, the peak detector taps the input bus, and the delay patches
+        # into the reverb's input bus, so the reverb comes up before the delay.
         self._vm_proc = subprocess.Popen(
             ["chuck", "--loop",
              "chuck-scripts/core/osc-router.ck",
              "chuck-scripts/core/input.ck",
+             "chuck-scripts/core/peak-detector.ck",
              "chuck-scripts/core/reverb.ck",
              "chuck-scripts/core/delay.ck"],
             stdout=subprocess.PIPE,

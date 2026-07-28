@@ -5,6 +5,6 @@
   "ChucK": true,
   "Camera Feed": true,
   "Tracking": false,
-  "Gestures": true,
+  "Gestures": false,
   "Configuration": false
 }
