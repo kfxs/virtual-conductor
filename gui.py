@@ -96,6 +96,10 @@ class ConductorGUI:
         # layout pared down for a performance survives a restart.
         self.window_visible = routing_config.load_window_visibility(WINDOW_TITLES)
 
+        # This frame's resolved 0..1 per (module, param), filled by _resolve_all
+        # at the top of the routing windows. Empty until the first frame draws.
+        self._resolved = {}
+
         # Last value seen for every landmark, updated each frame from the tracker.
         # Held between frames so a param freezes (rather than snapping to 0) when
         # its hand leaves view. Seeded to a neutral pose like ChucK used to.
@@ -166,36 +170,54 @@ class ConductorGUI:
             imgui.pop_style_var()
             imgui.internal.pop_item_flag()
 
+    def _resolve_param(self, st):
+        """One param's routing state -> the single normalized 0..1 value ChucK
+        receives.
+
+        Contract: ChucK maps 0 -> param minimum, 1 -> maximum, no inversion.
+        Every axis flip and feel curve happens here, so the value on the wire is
+        always normalized."""
+        if st["mode"] == "landmark":
+            raw = self.latest_landmarks.get(st["landmark"], 0.5)
+            # Invert FIRST (fix the axis direction), then range on the corrected
+            # signal. This keeps Set Min/Max semantic: lo always maps to 0 (param
+            # min), hi to 1 (max). Captures live in this corrected space, so the
+            # range resets when invert toggles.
+            r = (1.0 - raw) if st["invert"] else raw
+            span = st["hi"] - st["lo"]
+            if abs(span) > 1e-6:
+                value = max(0.0, min(1.0, (r - st["lo"]) / span))
+            else:
+                value = 0.0
+        else:
+            value = float(st["slider"])   # slider already reads low→high
+        if st["exp"]:
+            # Feel knob: bend the final 0..1 through a normalized exp curve
+            # (same for slider and landmark). ChucK still maps linearly.
+            value = (math.exp(EXP_K * value) - 1.0) / (math.exp(EXP_K) - 1.0)
+        return value
+
+    def _resolve_all(self):
+        """Resolve every param once per frame into self._resolved.
+
+        The sliders and the OSC push both need this number, and they must agree:
+        a landmark-driven slider showing one value while ChucK plays another
+        would be worse than not animating at all. Resolved before the windows
+        draw, so what's on screen is this frame's landmark, not last frame's."""
+        self._resolved = {
+            (module, param): self._resolve_param(self.routing_state[module][param])
+            for module, params in routing_config.MODULE_PARAMS.items()
+            for param, _default in params
+        }
+
     def _send_routing_osc(self):
-        """Resolve each param to a single value and push it to ChucK on
-        /param/<module>/<param>. Sent every frame: idempotent and cheap, so it
-        auto-resyncs whenever the VM (re)starts."""
+        """Push each resolved param to ChucK on /param/<module>/<param>. Sent
+        every frame: idempotent and cheap, so it auto-resyncs whenever the VM
+        (re)starts. Runs regardless of which windows are hidden."""
         if not self.osc_enabled:
             return
-        # Contract: ChucK maps 0 -> param minimum, 1 -> maximum, no inversion.
-        # All axis flips happen here so the value on the wire is always normalized.
-        for module, params in routing_config.MODULE_PARAMS.items():
-            for param, _default in params:
-                st = self.routing_state[module][param]
-                if st["mode"] == "landmark":
-                    raw = self.latest_landmarks.get(st["landmark"], 0.5)
-                    # Invert FIRST (fix the axis direction), then range on the
-                    # corrected signal. This keeps Set Min/Max semantic: lo always
-                    # maps to 0 (param min), hi to 1 (max). Captures live in this
-                    # corrected space, so the range resets when invert toggles.
-                    r = (1.0 - raw) if st["invert"] else raw
-                    span = st["hi"] - st["lo"]
-                    if abs(span) > 1e-6:
-                        value = max(0.0, min(1.0, (r - st["lo"]) / span))
-                    else:
-                        value = 0.0
-                else:
-                    value = float(st["slider"])   # slider already reads low→high
-                if st["exp"]:
-                    # Feel knob: bend the final 0..1 through a normalized exp curve
-                    # (same for slider and landmark). ChucK still maps linearly.
-                    value = (math.exp(EXP_K * value) - 1.0) / (math.exp(EXP_K) - 1.0)
-                self.osc_ctrl.send_value(f"/param/{module}/{param}", value)
+        for (module, param), value in self._resolved.items():
+            self.osc_ctrl.send_value(f"/param/{module}/{param}", value)
         # Input source select: 0 = fake-theorbo, 1 = mic. Sent every frame like
         # the params, so it auto-resyncs whenever the VM (re)starts.
         self.osc_ctrl.send_value(
@@ -258,6 +280,10 @@ class ConductorGUI:
         Live Input and the fx buses are core shreds, so they show whenever the
         VM is up; ensemble modules appear only once added to the VM.
         """
+        # Resolve every param first: the sliders below read these to animate,
+        # and _send_routing_osc pushes the same numbers at the end.
+        self._resolve_all()
+
         vm = self.chuck.vm_running
         params_of = routing_config.MODULE_PARAMS
         core = routing_config.CORE_MODULES
@@ -501,16 +527,28 @@ class ConductorGUI:
             imgui.text(param)
             imgui.same_line(60)
 
-            # Slider (active in slider mode, greyed in landmark mode)
+            # Slider (active in slider mode, greyed in landmark mode).
+            #
+            # In landmark mode it's read-only, so it shows the live resolved
+            # value instead of the stale saved position — the grab tracking the
+            # hand is the clearest confirmation that the routing is live, and
+            # it's the same number ChucK is playing (post invert/range/exp).
+            # Immediate mode has no setter: whatever we pass in is what's drawn.
+            shown = (
+                self._resolved.get((module, param), st["slider"])
+                if is_landmark else st["slider"]
+            )
             self._begin_disabled(is_landmark)
             imgui.set_next_item_width(160)
             # format="" hides the numeric readout — the 0..1 value is just
             # wire data, meaningless to the user; only the grab position matters.
             s_changed, new_val = imgui.slider_float(
-                f"##slider_{module}_{param}", st["slider"], 0.0, 1.0, format=""
+                f"##slider_{module}_{param}", shown, 0.0, 1.0, format=""
             )
             self._end_disabled(is_landmark)
-            if s_changed:
+            # Guard on the mode too: a driven value must never be written back
+            # as if the user had dragged it.
+            if s_changed and not is_landmark:
                 st["slider"] = new_val
                 state_changed = True
 

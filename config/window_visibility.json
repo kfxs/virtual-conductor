@@ -4,7 +4,7 @@
   "Send FX": true,
   "ChucK": true,
   "Camera Feed": true,
-  "Tracking": true,
+  "Tracking": false,
   "Gestures": true,
-  "Configuration": true
+  "Configuration": false
 }
