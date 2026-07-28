@@ -20,7 +20,7 @@ g_mic => Gain outGain => dac;
 
 // fake-theorbo source (looped wav); the mic source is the live adc
 SndBuf fakeTheorbo;
-me.dir() + "/../../chuck-test/samples/tiorba.wav" => fakeTheorbo.read;
+me.dir() + "/../../samples/tiorba.wav" => fakeTheorbo.read;
 1 => fakeTheorbo.loop;
 1.0 => fakeTheorbo.rate;
 

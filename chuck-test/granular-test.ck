@@ -4,7 +4,7 @@
 
 SndBuf input => Gain inputGain => dac;
 0.5 => inputGain.gain;
-me.dir() + "/samples/tiorba.wav" => input.read;
+me.dir() + "/../samples/tiorba.wav" => input.read;
 1 => input.loop;
 1.0 => input.rate;
 

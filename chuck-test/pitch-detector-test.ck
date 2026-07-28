@@ -3,7 +3,7 @@
 
 // audio input (fake mic — swap with adc later)
 SndBuf input => dac;
-me.dir() + "/samples/tiorba.wav" => input.read;
+me.dir() + "/../samples/tiorba.wav" => input.read;
 1 => input.loop;
 1.0 => input.rate;
 
