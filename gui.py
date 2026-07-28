@@ -15,6 +15,7 @@ import OpenGL.GL as gl
 from gesture_collector import GestureCollector
 from chuck_controller import ChuckController
 from osc_controller import OscController
+from osc_receiver import OscReceiver
 from midi_input import MidiListener
 import routing_config
 
@@ -27,10 +28,23 @@ EXP_K = 2.0
 # identified, and how the menu focuses it. Performance panels first, since
 # they're the ones being reached for mid-session.
 WINDOW_GROUPS = [
-    ("Performance", ["Live Input", "Virtual Ensemble", "Send FX", "ChucK"]),
+    ("Performance", ["Live Input", "Virtual Ensemble", "Send FX", "Output", "ChucK"]),
     ("Setup", ["Camera Feed", "Tracking", "Gestures", "Configuration"]),
 ]
 WINDOW_TITLES = [title for _group, titles in WINDOW_GROUPS for title in titles]
+
+# --- Output meter ---
+# Scaled in dB, like any studio meter: linear amplitude spends almost all its
+# range in the top few dB and would leave everything below a whisper pinned to
+# the left. -60 dBFS is the bottom of the display.
+METER_FLOOR_DB = -60.0
+METER_GREEN_DB = -12.0    # below this: green — comfortable headroom
+METER_AMBER_DB = -3.0     # green -> amber here, amber -> red above it
+# Ballistics: jump instantly to a new peak, fall back slowly. Instant in both
+# directions would flicker too fast to read; slow in both would miss transients.
+METER_RELEASE_TAU = 0.35  # seconds for the bar to fall to ~37% of its level
+METER_PEAK_HOLD = 1.5     # seconds the peak marker sits before it starts to fall
+METER_CLIP_HOLD = 2.0     # seconds the clip light stays lit after an overload
 
 
 class ConductorGUI:
@@ -99,6 +113,15 @@ class ConductorGUI:
         # This frame's resolved 0..1 per (module, param), filled by _resolve_all
         # at the top of the routing windows. Empty until the first frame draws.
         self._resolved = {}
+
+        # Master output metering. chuck-scripts/core/meter.ck reads the summed
+        # dac and reports the peak here; these hold the displayed state, with
+        # the ballistics applied per frame in _render_output_window.
+        self.osc_recv = OscReceiver()
+        self.meter_level = [0.0, 0.0]      # bar position, L/R (linear peak)
+        self.meter_peak = [0.0, 0.0]       # peak-hold marker, L/R
+        self._meter_peak_age = [0.0, 0.0]  # seconds since each peak was set
+        self._meter_clip_age = METER_CLIP_HOLD   # seconds since the last clip
 
         # Last value seen for every landmark, updated each frame from the tracker.
         # Held between frames so a param freezes (rather than snapping to 0) when
@@ -223,6 +246,160 @@ class ConductorGUI:
         self.osc_ctrl.send_value(
             "/param/input/source", 1.0 if self.input_source == "mic" else 0.0
         )
+
+    @staticmethod
+    def _amp_to_db(amp):
+        """Linear amplitude -> dBFS, floored so silence doesn't go to -inf."""
+        if amp <= 1e-6:
+            return METER_FLOOR_DB
+        return 20.0 * math.log10(amp)
+
+    @staticmethod
+    def _db_to_frac(db):
+        """dBFS -> 0..1 across the meter's scale. Clamped at the top so an
+        overload pins the bar rather than drawing past the end of it."""
+        frac = (db - METER_FLOOR_DB) / (0.0 - METER_FLOOR_DB)
+        return max(0.0, min(1.0, frac))
+
+    def _update_meter(self, dt):
+        """Fold this frame's OSC readings into the displayed meter state."""
+        left, right, clipped = self.osc_recv.take()
+
+        # Peak decay is exponential in dB terms, which is what makes a meter
+        # look natural: multiply by a per-frame factor rather than subtracting.
+        decay = math.exp(-dt / METER_RELEASE_TAU) if METER_RELEASE_TAU > 0 else 0.0
+
+        for i, reading in enumerate((left, right)):
+            if reading >= self.meter_level[i]:
+                self.meter_level[i] = reading        # instant attack
+            else:
+                self.meter_level[i] *= decay         # slow release
+
+            # peak hold: a new high resets the timer, otherwise it ages and
+            # eventually falls with the bar
+            if reading >= self.meter_peak[i]:
+                self.meter_peak[i] = reading
+                self._meter_peak_age[i] = 0.0
+            else:
+                self._meter_peak_age[i] += dt
+                if self._meter_peak_age[i] > METER_PEAK_HOLD:
+                    self.meter_peak[i] *= decay
+                    self.meter_peak[i] = max(self.meter_peak[i], self.meter_level[i])
+
+        if clipped:
+            self._meter_clip_age = 0.0
+        else:
+            self._meter_clip_age += dt
+
+    def _draw_meter_scale(self, width=26.0, height=150.0):
+        """dB labels beside the bars. Vertical gives room for a real scale, so
+        the zone colours aren't the only clue to where you are."""
+        imgui.begin_group()
+
+        draw = imgui.get_window_draw_list()
+        x, y = imgui.get_cursor_screen_pos()
+        bottom = y + height
+        text_col = imgui.get_color_u32_rgba(0.55, 0.55, 0.60, 1.0)
+
+        for db in (0.0, -3.0, -12.0, -24.0, -40.0, -60.0):
+            ty = bottom - self._db_to_frac(db) * height
+            # nudge the end labels inward so they aren't clipped by the bar ends
+            ty = max(y, min(ty, bottom - imgui.get_text_line_height()))
+            draw.add_text(x, ty, text_col, f"{int(db)}")
+
+        imgui.dummy(width, height)
+        imgui.text(" ")   # keeps the baseline aligned with the bars' labels
+
+        imgui.end_group()
+
+    def _draw_meter_bar(self, label, level, peak, width=18.0, height=150.0):
+        """One channel as a vertical bar, dB-scaled and coloured green/amber/red
+        by zone, with a peak-hold marker and its label underneath.
+
+        Drawn by hand because pyimgui's progress_bar is horizontal only, a
+        single flat colour, and can't show zones or a peak marker."""
+        imgui.begin_group()
+
+        draw = imgui.get_window_draw_list()
+        x, y = imgui.get_cursor_screen_pos()
+        bottom = y + height
+
+        bg = imgui.get_color_u32_rgba(0.12, 0.12, 0.14, 1.0)
+        edge = imgui.get_color_u32_rgba(0.30, 0.30, 0.34, 1.0)
+        green = imgui.get_color_u32_rgba(0.25, 0.78, 0.35, 1.0)
+        amber = imgui.get_color_u32_rgba(0.95, 0.75, 0.20, 1.0)
+        red = imgui.get_color_u32_rgba(0.90, 0.25, 0.22, 1.0)
+
+        draw.add_rect_filled(x, y, x + width, bottom, bg)
+
+        # Everything is measured upward from the bottom, so the bar grows the
+        # way a meter should. The fill passes through the zones rather than
+        # recolouring wholesale, so you can see how far into red it actually is.
+        filled = self._db_to_frac(self._amp_to_db(level)) * height
+        g_end = self._db_to_frac(METER_GREEN_DB) * height
+        a_end = self._db_to_frac(METER_AMBER_DB) * height
+        for start, end, colour in (
+            (0.0, g_end, green),
+            (g_end, a_end, amber),
+            (a_end, height, red),
+        ):
+            segment = min(filled, end)
+            if segment > start:
+                draw.add_rect_filled(
+                    x, bottom - segment, x + width, bottom - start, colour
+                )
+
+        # zone boundary ticks, so the scale is readable without numbers
+        for boundary in (g_end, a_end):
+            draw.add_line(x, bottom - boundary, x + width, bottom - boundary, edge, 1.0)
+
+        # peak-hold marker
+        if peak > 0.0:
+            py = bottom - self._db_to_frac(self._amp_to_db(peak)) * height
+            py = max(py, y + 1.0)
+            marker = red if self._amp_to_db(peak) >= METER_AMBER_DB else edge
+            draw.add_line(x, py, x + width, py, marker, 2.0)
+
+        draw.add_rect(x, y, x + width, bottom, edge)
+        imgui.dummy(width, height)
+        imgui.text(label)
+
+        imgui.end_group()
+
+    def _render_output_window(self):
+        """Master output meter: what everything sums to at the dac."""
+        if not self._begin_window("Output"):
+            return
+
+        self._update_meter(imgui.get_io().delta_time)
+
+        if self.osc_recv.error:
+            imgui.text_colored(self.osc_recv.error, 1.0, 0.5, 0.3)
+        elif not self.chuck.vm_running:
+            imgui.text_disabled("VM stopped — no signal.")
+
+        # dB scale down the left, then the two channels side by side
+        self._draw_meter_scale()
+        imgui.same_line()
+        self._draw_meter_bar("L", self.meter_level[0], self.meter_peak[0])
+        imgui.same_line()
+        self._draw_meter_bar("R", self.meter_level[1], self.meter_peak[1])
+
+        # Clip light. Latched for a couple of seconds so a single overloaded
+        # transient can't flash by between frames unseen; click it to clear.
+        lit = self._meter_clip_age < METER_CLIP_HOLD
+        if lit:
+            imgui.text_colored("CLIP", 1.0, 0.25, 0.22)
+        else:
+            imgui.text_disabled("CLIP")
+        if imgui.is_item_clicked():
+            self._meter_clip_age = METER_CLIP_HOLD
+        imgui.same_line()
+        peak_db = max(self._amp_to_db(self.meter_peak[0]),
+                      self._amp_to_db(self.meter_peak[1]))
+        imgui.text_disabled(f"peak {peak_db:5.1f} dBFS")
+
+        imgui.end()
 
     def _begin_window(self, title):
         """Open a window unless it's been hidden from the Windows menu.
@@ -1060,6 +1237,9 @@ class ConductorGUI:
         # --- Per-Instrument Routing Windows ---
         self._render_instrument_windows()
 
+        # --- Master Output Meter ---
+        self._render_output_window()
+
         # --- OpenGL Render ---
         imgui.render()
         gl.glClearColor(0.1, 0.1, 0.1, 1.0)
@@ -1077,6 +1257,7 @@ class ConductorGUI:
             imgui.end()
         self._render_chuck_panel()
         self._render_instrument_windows()
+        self._render_output_window()
         imgui.render()
         gl.glClearColor(0.1, 0.1, 0.1, 1.0)
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
@@ -1100,6 +1281,7 @@ class ConductorGUI:
         # so a window moved just before quitting would otherwise be lost.
         imgui.save_ini_settings_to_disk(self._ini_path)
         self.midi.close()
+        self.osc_recv.shutdown()
         self.chuck.stop_vm()
         gl.glDeleteTextures(1, [self.video_texture])
         self.impl.shutdown()
