@@ -4,6 +4,9 @@
 
 global float g_synth_pitch;
 global float g_synth_cutoff;
+// how much of this module to send into the shared delay/reverb buses
+global float g_synth_delaysend;
+global float g_synth_reverbsend;
 
 // ===== HELPERS =====
 fun float mapRange(float value, float inMin, float inMax, float outMin, float outMax) {
@@ -26,6 +29,23 @@ SawOsc saw => LPF filter => Gain master => dac;
 0.5 => master.gain;
 2000 => filter.freq;
 2.0 => filter.Q;
+
+// fx sends into the shared buses (core/delay.ck, core/reverb.ck). Mono source,
+// so one send gain per bus feeds both channels. Tapped post-fader (after
+// master) so the module's level fades the tails with it.
+global Gain g_delay_in_l;
+global Gain g_delay_in_r;
+global Gain g_reverb_in_l;
+global Gain g_reverb_in_r;
+
+Gain delaySend, reverbSend;
+0.0 => delaySend.gain;
+0.0 => reverbSend.gain;
+
+master => delaySend  => g_delay_in_l;
+          delaySend  => g_delay_in_r;
+master => reverbSend => g_reverb_in_l;
+          reverbSend => g_reverb_in_r;
 
 // ===== SETTINGS =====
 0.1 => float smoothing;
@@ -51,6 +71,11 @@ fun void interpolate() {
 
         currentCutoff + (targetCutoff - currentCutoff) * smoothing => currentCutoff;
         currentCutoff => filter.freq;
+
+        // fx sends track their globals directly (no smoothing needed — they're
+        // a mix amount, not a per-sample audio target)
+        Math.max(0.0, Math.min(1.0, g_synth_delaysend))  => delaySend.gain;
+        Math.max(0.0, Math.min(1.0, g_synth_reverbsend)) => reverbSend.gain;
 
         updateRate => now;
     }

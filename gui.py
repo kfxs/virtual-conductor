@@ -196,21 +196,31 @@ class ConductorGUI:
         imgui.begin("Active ChucK Scripts")
 
         # MODULE_PARAMS keys are lowercase ("synth"); ChucK effect names are
-        # capitalized ("Synth"). Theorbo is the always-on input source (a core
-        # shred, not an add/remove effect), so it shows whenever the VM runs;
-        # other instruments appear only once added to the VM.
+        # capitalized ("Synth"). The core shreds — the input source and the
+        # shared delay/reverb buses — are always running rather than add/remove
+        # effects, so they show whenever the VM runs; other instruments appear
+        # only once added to the VM.
+        core = routing_config.CORE_MODULES
         active = []
-        if self.chuck.vm_running and "input" in routing_config.MODULE_PARAMS:
-            active.append(("input", routing_config.MODULE_PARAMS["input"]))
+        if self.chuck.vm_running:
+            active += [
+                (module, routing_config.MODULE_PARAMS[module])
+                for module in core
+                if module in routing_config.MODULE_PARAMS
+            ]
         active += [
             (module, params)
             for module, params in routing_config.MODULE_PARAMS.items()
-            if module != "input" and self.chuck.is_active(module.capitalize())
+            if module not in core
+            and module != "burst-trigger"
+            and self.chuck.is_active(module.capitalize())
         ]
-        # burst-trigger has no params — it's a trigger module, rendered with a
-        # Fire button instead of param sliders. params is None to flag it.
+        # burst-trigger is a trigger module: a Fire button in place of the usual
+        # sound-shaping params, with only its fx sends rendered below it.
         if self.chuck.is_active("Burst-trigger"):
-            active.append(("burst-trigger", None))
+            active.append(
+                ("burst-trigger", routing_config.MODULE_PARAMS.get("burst-trigger", []))
+            )
 
         if not active:
             imgui.text_disabled("No instruments active.")
@@ -251,6 +261,10 @@ class ConductorGUI:
                             if self._link_text("clear", (0.4, 0.7, 1.0)):
                                 self.burst_midi_binding = None
                                 routing_config.save_burst_binding(None)
+                    # fx sends below the Fire row, rendered like any other
+                    # instrument's routing rows.
+                    if params and self._render_instrument_section(module, params):
+                        state_changed = True
                 elif module == "aliased-shimmer":
                     # Gate module: Collect is held = 1, released = 0. We read the
                     # button's held state (is_item_active) each frame rather than

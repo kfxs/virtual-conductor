@@ -15,44 +15,32 @@ limiter.limit();
 // circular buffer
 // ** bypass limiter: change 'limiter =>' to 'g_mic =>' on the next line **
 limiter => LiSa2 grainBuffer => blackhole;
-// ping pong delay (before master volume)
-DelayL delL, delR;
-1.05::second => delL.max;
-1.05::second => delR.max;
-300::ms => delL.delay;
-400::ms => delR.delay;
-
-// cross feedback: left output → right input, right output → left input
-Gain xfbL, xfbR;
-0.5 => xfbL.gain => xfbR.gain;
-
-// dry/wet gains
-Gain dryL, dryR, wetL, wetR;
-1.0 => dryL.gain => dryR.gain;
-0.0 => wetL.gain => wetR.gain;
 
 // master
-NRev reverbL, reverbR;
-0.0 => reverbL.mix => reverbR.mix;
-
 Gain masterL, masterR;
 1.0 => masterL.gain => masterR.gain;
 
-// dry path
-grainBuffer.chan(0) => dryL => reverbL => masterL => dac.left;
-grainBuffer.chan(1) => dryR => reverbR => masterR => dac.right;
+grainBuffer.chan(0) => masterL => dac.left;
+grainBuffer.chan(1) => masterR => dac.right;
 
-// wet path: grainBuffer into delays
-grainBuffer.chan(0) => delL;
-grainBuffer.chan(1) => delR;
+// fx sends — the delay and reverb live in core/delay.ck and core/reverb.ck now
+// and are shared by every module, so this one only decides how much of itself
+// to send. Tapped post-fader (after masterL/R) so pulling mastervol down fades
+// the tails with it.
+global Gain g_delay_in_l;
+global Gain g_delay_in_r;
+global Gain g_reverb_in_l;
+global Gain g_reverb_in_r;
 
-// cross feedback wiring
-delL => xfbR => delR;
-delR => xfbL => delL;
+Gain delaySendL, delaySendR, reverbSendL, reverbSendR;
+0.0 => delaySendL.gain => delaySendR.gain;
+0.0 => reverbSendL.gain => reverbSendR.gain;
 
-// wet output into reverb
-delL => wetL => reverbL;
-delR => wetR => reverbR;
+masterL => delaySendL  => g_delay_in_l;
+masterR => delaySendR  => g_delay_in_r;
+masterL => reverbSendL => g_reverb_in_l;
+masterR => reverbSendR => g_reverb_in_r;
+
 4::second => grainBuffer.duration;
 1 => grainBuffer.record;
 
@@ -62,11 +50,8 @@ delR => wetR => reverbR;
 0.5 => float position;
 0.1 => float posSpray;
 0.3 => float panSpray;
-300::ms => dur delayTimeL;
-400::ms => dur delayTimeR;
-0.5 => float delayFeedback;
-0.0 => float delayMix;
-0.0 => float reverbMix;
+0.0 => float delaySend;
+0.0 => float reverbSend;
 0.0 => float octaveUp;
 0.0 => float octaveDown;
 0.0 => float fineRange;
@@ -89,10 +74,7 @@ delR => wetR => reverbR;
 0.1     => float DYNO_THRESH_MIN;  1.0      => float DYNO_THRESH_MAX;
 0.0     => float MASTER_VOL_MIN;   2.0      => float MASTER_VOL_MAX;
 0.0     => float PAN_SPRAY_MIN;    0.5      => float PAN_SPRAY_MAX;
-50::ms  => dur   DELAY_TIME_MIN;   1000::ms => dur   DELAY_TIME_MAX;
-0.0     => float DELAY_FB_MIN;     0.95     => float DELAY_FB_MAX;
-0.0     => float DELAY_MIX_MIN;    1.0      => float DELAY_MIX_MAX;
-0.0     => float REVERB_MIX_MIN;   1.0      => float REVERB_MIX_MAX;
+0.0     => float SEND_MIN;         1.0      => float SEND_MAX;
 0.0     => float OCTAVE_UP_MIN;    1.0      => float OCTAVE_UP_MAX;
 0.0     => float OCTAVE_DOWN_MIN;  1.0      => float OCTAVE_DOWN_MAX;
 0.0     => float FINE_RANGE_MIN;   100.0    => float FINE_RANGE_MAX;
@@ -128,29 +110,14 @@ fun void setPanSpray(float val) {
     Math.max(Math.min(val, PAN_SPRAY_MAX), PAN_SPRAY_MIN) => panSpray;
 }
 
-fun void setDelayTimeL(dur val) {
-    Math.max(val/ms, DELAY_TIME_MIN/ms)::ms => val;
-    Math.min(val/ms, DELAY_TIME_MAX/ms)::ms => delayTimeL;
-    delayTimeL => delL.delay;
-}
-fun void setDelayTimeR(dur val) {
-    Math.max(val/ms, DELAY_TIME_MIN/ms)::ms => val;
-    Math.min(val/ms, DELAY_TIME_MAX/ms)::ms => delayTimeR;
-    delayTimeR => delR.delay;
-}
-fun void setDelayFeedback(float val) {
-    Math.max(Math.min(val, DELAY_FB_MAX), DELAY_FB_MIN) => delayFeedback;
-    delayFeedback => xfbL.gain => xfbR.gain;
-}
-fun void setDelayMix(float val) {
-    Math.max(Math.min(val, DELAY_MIX_MAX), DELAY_MIX_MIN) => delayMix;
-    1.0 - delayMix => dryL.gain => dryR.gain;
-    delayMix => wetL.gain => wetR.gain;
+fun void setDelaySend(float val) {
+    Math.max(Math.min(val, SEND_MAX), SEND_MIN) => delaySend;
+    delaySend => delaySendL.gain => delaySendR.gain;
 }
 
-fun void setReverbMix(float val) {
-    Math.max(Math.min(val, REVERB_MIX_MAX), REVERB_MIX_MIN) => reverbMix;
-    reverbMix => reverbL.mix => reverbR.mix;
+fun void setReverbSend(float val) {
+    Math.max(Math.min(val, SEND_MAX), SEND_MIN) => reverbSend;
+    reverbSend => reverbSendL.gain => reverbSendR.gain;
 }
 
 fun void setOctaveUp(float val) {
@@ -258,11 +225,8 @@ global float g_granulator_fineprob;
 global float g_granulator_thresh;
 global float g_granulator_attack;
 global float g_granulator_release;
-global float g_granulator_delayleft;
-global float g_granulator_delayright;
-global float g_granulator_feedback;
-global float g_granulator_delaymix;
-global float g_granulator_reverbmix;
+global float g_granulator_delaysend;
+global float g_granulator_reverbsend;
 global float g_granulator_mastervol;
 
 // map a normalized 0..1 into a float range
@@ -291,13 +255,9 @@ fun void oscControl() {
         setDynoThresh(  mapF(g_granulator_thresh,  DYNO_THRESH_MIN,  DYNO_THRESH_MAX) );
         setDynoAttack(  mapD(g_granulator_attack,  DYNO_ATTACK_MIN,  DYNO_ATTACK_MAX) );
         setDynoRelease( mapD(g_granulator_release, DYNO_RELEASE_MIN, DYNO_RELEASE_MAX) );
-        // delay
-        setDelayTimeL(   mapD(g_granulator_delayleft,  DELAY_TIME_MIN, DELAY_TIME_MAX) );
-        setDelayTimeR(   mapD(g_granulator_delayright, DELAY_TIME_MIN, DELAY_TIME_MAX) );
-        setDelayFeedback( mapF(g_granulator_feedback,  DELAY_FB_MIN,   DELAY_FB_MAX) );
-        setDelayMix(      mapF(g_granulator_delaymix,  DELAY_MIX_MIN,  DELAY_MIX_MAX) );
-        // reverb
-        setReverbMix( mapF(g_granulator_reverbmix, REVERB_MIX_MIN, REVERB_MIX_MAX) );
+        // fx sends into the shared delay/reverb buses
+        setDelaySend(  mapF(g_granulator_delaysend,  SEND_MIN, SEND_MAX) );
+        setReverbSend( mapF(g_granulator_reverbsend, SEND_MIN, SEND_MAX) );
         // output
         setMasterVol( mapF(g_granulator_mastervol, MASTER_VOL_MIN, MASTER_VOL_MAX) );
 

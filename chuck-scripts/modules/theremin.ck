@@ -4,11 +4,31 @@
 
 global float g_theremin_pitch;
 global float g_theremin_volume;
+// how much of this module to send into the shared delay/reverb buses
+global float g_theremin_delaysend;
+global float g_theremin_reverbsend;
 
 // ===== AUDIO SETUP =====
 SinOsc s => Gain g => dac;
 440 => s.freq;
 0.5 => g.gain;
+
+// fx sends into the shared buses (core/delay.ck, core/reverb.ck). Mono source,
+// so one send gain per bus feeds both channels. Tapped post-fader (after g) so
+// the volume control fades the tails with it.
+global Gain g_delay_in_l;
+global Gain g_delay_in_r;
+global Gain g_reverb_in_l;
+global Gain g_reverb_in_r;
+
+Gain delaySend, reverbSend;
+0.0 => delaySend.gain;
+0.0 => reverbSend.gain;
+
+g => delaySend  => g_delay_in_l;
+     delaySend  => g_delay_in_r;
+g => reverbSend => g_reverb_in_l;
+     reverbSend => g_reverb_in_r;
 
 // ===== VIBRATO =====
 // Rate proportional to current frequency (ratio 1/60 → ~7 Hz at 440 Hz)
@@ -38,6 +58,11 @@ fun void interpolate() {
         currentFreq + (vibrato.last() * currentFreq * vibratoDepthRatio) => s.freq;
 
         g.gain() + (targetGain - g.gain()) * smoothing => g.gain;
+
+        // fx sends track their globals directly (no smoothing needed — they're
+        // a mix amount, not a per-sample audio target)
+        Math.max(0.0, Math.min(1.0, g_theremin_delaysend))  => delaySend.gain;
+        Math.max(0.0, Math.min(1.0, g_theremin_reverbsend)) => reverbSend.gain;
 
         updateRate => now;
     }

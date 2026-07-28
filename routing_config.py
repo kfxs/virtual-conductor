@@ -51,12 +51,58 @@ DEFAULT_LO = 0.0
 DEFAULT_HI = 1.0
 
 # Params each module exposes, with the landmark each one defaults to.
+#
+# Every sound source carries a delaysend/reverbsend pair — how much of itself it
+# sends into the shared delay and reverb buses (chuck-scripts/core/delay.ck and
+# reverb.ck). The buses own the actual delay/reverb settings; the modules only
+# decide how much to send.
 MODULE_PARAMS = {
-    "theremin": [("pitch", "hand_right_index_y"), ("volume", "hand_left_index_y")],
-    "synth":    [("pitch", "hand_right_index_y"), ("cutoff", "hand_left_index_y")],
-    # Input: the shared input source (always running). One param = the dry input
-    # monitor volume; the source choice (fake-theorbo vs mic) persists separately.
-    "input":    [("volume", "hand_left_index_y")],
+    "theremin": [
+        ("pitch",      "hand_right_index_y"),
+        ("volume",     "hand_left_index_y"),
+        ("delaysend",  "hand_right_thumb_x"),
+        ("reverbsend", "hand_left_thumb_x"),
+    ],
+    "synth": [
+        ("pitch",      "hand_right_index_y"),
+        ("cutoff",     "hand_left_index_y"),
+        ("delaysend",  "hand_right_thumb_x"),
+        ("reverbsend", "hand_left_thumb_x"),
+    ],
+    # Input: the shared input source (always running). The dry input monitor
+    # volume plus its own fx sends, so the raw instrument can be delayed and
+    # reverbed without going through a module. The source choice (fake-theorbo
+    # vs mic) persists separately.
+    "input": [
+        ("volume",     "hand_left_index_y"),
+        ("delaysend",  "hand_right_thumb_x"),
+        ("reverbsend", "hand_left_thumb_x"),
+    ],
+    # Burst-trigger: no sound-shaping params (it's a one-shot noise burst fired
+    # by a button), just the fx sends. Rendered under its Fire button.
+    "burst-trigger": [
+        ("delaysend",  "hand_right_thumb_x"),
+        ("reverbsend", "hand_left_thumb_x"),
+    ],
+    # Delay: the shared dual (ping-pong) delay bus, a core shred. Left and right
+    # have independent times and cross-feed each other; toreverb is the delay's
+    # own send into the reverb bus.
+    "delay": [
+        ("timeleft",  "hand_right_index_x"),
+        ("timeright", "hand_left_index_x"),
+        ("feedback",  "hand_right_middle_x"),
+        ("toreverb",  "hand_left_middle_x"),
+        ("return",    "hand_right_pinky_z"),
+    ],
+    # Reverb: the shared reverb bus, a core shred. Everything that reaches it
+    # arrives via a module's reverbsend or the delay's toreverb.
+    "reverb": [
+        ("decay",    "hand_right_index_x"),
+        ("damping",  "hand_left_index_x"),
+        ("predelay", "hand_right_middle_x"),
+        ("size",     "hand_left_middle_x"),
+        ("return",   "hand_right_pinky_z"),
+    ],
     # Granulator: every param exposed. The landmark is only the default used if
     # the user switches that param to landmark mode — all start on the slider.
     "granulator": [
@@ -77,13 +123,9 @@ MODULE_PARAMS = {
         ("thresh",     "hand_right_thumb_x"),
         ("attack",     "hand_left_thumb_x"),
         ("release",    "hand_right_index_x"),
-        # delay
-        ("delayleft",  "hand_left_index_x"),
-        ("delayright", "hand_right_ring_x"),
-        ("feedback",   "hand_left_ring_x"),
-        ("delaymix",   "hand_right_pinky_x"),
-        # reverb
-        ("reverbmix",  "hand_left_pinky_x"),
+        # fx sends into the shared delay/reverb buses
+        ("delaysend",  "hand_left_index_x"),
+        ("reverbsend", "hand_right_ring_x"),
         # output
         ("mastervol",  "hand_right_pinky_z"),
     ],
@@ -100,8 +142,31 @@ MODULE_PARAMS = {
         ("lforate4x", "hand_right_ring_x"),
         ("lforate8x", "hand_right_pinky_x"),
         ("mastervol", "hand_right_pinky_z"),
+        # fx sends into the shared delay/reverb buses
+        ("delaysend",  "hand_left_index_x"),
+        ("reverbsend", "hand_left_middle_x"),
     ],
 }
+
+# Modules that are core shreds — always running, never added/removed via the
+# effects list. The GUI shows their sections whenever the VM is up.
+CORE_MODULES = ["input", "delay", "reverb"]
+
+# Per-param starting slider positions, for the params where the global 0.5
+# default would be wrong. Keyed by (module, param).
+#   - sends start closed, so nothing is drenched in fx on a fresh checkout
+#   - the delay times start at the 300/400 ms ping-pong offset the granulator
+#     used to have; equal times would collapse it to a plain mono delay
+SLIDER_DEFAULTS = {
+    ("delay", "timeleft"): 0.26,    # ~300 ms in the 50..1000 ms range
+    ("delay", "timeright"): 0.37,   # ~400 ms
+    ("delay", "toreverb"): 0.0,
+    ("reverb", "predelay"): 0.0,
+}
+for _module, _params in MODULE_PARAMS.items():
+    for _param, _lm in _params:
+        if _param in ("delaysend", "reverbsend"):
+            SLIDER_DEFAULTS[(_module, _param)] = 0.0
 
 # All selectable landmarks — must match the table in landmarks.ck.
 SIDES = ["right", "left"]
@@ -130,10 +195,11 @@ def load_state():
             mode = saved.get("mode", DEFAULT_MODE)
             if mode not in ("slider", "landmark"):
                 mode = DEFAULT_MODE
+            fallback = SLIDER_DEFAULTS.get((module, param), DEFAULT_SLIDER)
             try:
-                slider = float(saved.get("slider", DEFAULT_SLIDER))
+                slider = float(saved.get("slider", fallback))
             except (TypeError, ValueError):
-                slider = DEFAULT_SLIDER
+                slider = fallback
             landmark = saved.get("landmark", default_landmark)
             if landmark not in LANDMARKS:
                 landmark = default_landmark

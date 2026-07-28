@@ -16,6 +16,37 @@ global float g_synth_cutoff;
 global float g_input_volume;
 global float g_input_source;   // 0 = fake-theorbo, 1 = mic
 
+// --- Shared fx buses (core/delay.ck, core/reverb.ck) ---
+// The delay and reverb are core shreds now, not per-module effects: every
+// module sends into them and they return to the dac. Each sound source has a
+// delaysend/reverbsend pair (how much of itself to send), and the buses
+// themselves own the actual delay/reverb settings.
+global float g_delay_timeleft;    // left channel delay time
+global float g_delay_timeright;   // right channel delay time
+global float g_delay_feedback;
+global float g_delay_toreverb;   // the delay's own send into the reverb
+global float g_delay_return;
+
+global float g_reverb_decay;
+global float g_reverb_damping;
+global float g_reverb_predelay;
+global float g_reverb_size;
+global float g_reverb_return;
+
+// per-source send amounts
+global float g_input_delaysend;
+global float g_input_reverbsend;
+global float g_theremin_delaysend;
+global float g_theremin_reverbsend;
+global float g_synth_delaysend;
+global float g_synth_reverbsend;
+global float g_burst_trigger_delaysend;
+global float g_burst_trigger_reverbsend;
+global float g_aliased_shimmer_delaysend;
+global float g_aliased_shimmer_reverbsend;
+global float g_granulator_delaysend;
+global float g_granulator_reverbsend;
+
 // burst-trigger — a momentary event, not a held value. Python sends a bang on
 // /trigger/burst the instant the trigger fires (GUI button now, a MIDI pad
 // later); burst-trigger.ck waits on this and fires one burst per signal. Being
@@ -61,11 +92,6 @@ global float g_granulator_fineprob;
 global float g_granulator_thresh;
 global float g_granulator_attack;
 global float g_granulator_release;
-global float g_granulator_delayleft;
-global float g_granulator_delayright;
-global float g_granulator_feedback;
-global float g_granulator_delaymix;
-global float g_granulator_reverbmix;
 global float g_granulator_mastervol;
 
 0.5 => g_theremin_pitch;
@@ -102,12 +128,37 @@ global float g_granulator_mastervol;
 0.5 => g_granulator_thresh;
 0.5 => g_granulator_attack;
 0.5 => g_granulator_release;
-0.5 => g_granulator_delayleft;
-0.5 => g_granulator_delayright;
-0.5 => g_granulator_feedback;
-0.5 => g_granulator_delaymix;
-0.5 => g_granulator_reverbmix;
 0.5 => g_granulator_mastervol;
+
+// Shared fx buses. Delay times start at 300 ms / 400 ms (the ping-pong offset
+// granulator used to have), the returns at unity. Every send starts at 0 so
+// nothing is drenched in fx the moment the VM boots — the GUI overwrites these
+// with the saved slider values on its first frame anyway, but until then the
+// buses stay silent rather than blasting.
+0.26 => g_delay_timeleft;     // ~300 ms in the 50..1000 ms range
+0.37 => g_delay_timeright;    // ~400 ms
+0.5  => g_delay_feedback;
+0.0  => g_delay_toreverb;
+0.5  => g_delay_return;       // 0.5 -> unity
+
+0.5 => g_reverb_decay;
+0.5 => g_reverb_damping;
+0.0 => g_reverb_predelay;
+0.5 => g_reverb_size;
+0.5 => g_reverb_return;       // 0.5 -> unity
+
+0.0 => g_input_delaysend;
+0.0 => g_input_reverbsend;
+0.0 => g_theremin_delaysend;
+0.0 => g_theremin_reverbsend;
+0.0 => g_synth_delaysend;
+0.0 => g_synth_reverbsend;
+0.0 => g_burst_trigger_delaysend;
+0.0 => g_burst_trigger_reverbsend;
+0.0 => g_aliased_shimmer_delaysend;
+0.0 => g_aliased_shimmer_reverbsend;
+0.0 => g_granulator_delaysend;
+0.0 => g_granulator_reverbsend;
 
 OscIn oin;
 OscMsg msg;
@@ -165,18 +216,45 @@ while( true )
 
         if( module == "theremin" )
         {
-            if( param == "pitch" )  v => g_theremin_pitch;
-            else if( param == "volume" ) v => g_theremin_volume;
+            if(      param == "pitch" )      v => g_theremin_pitch;
+            else if( param == "volume" )     v => g_theremin_volume;
+            else if( param == "delaysend" )  v => g_theremin_delaysend;
+            else if( param == "reverbsend" ) v => g_theremin_reverbsend;
         }
         else if( module == "synth" )
         {
-            if( param == "pitch" )  v => g_synth_pitch;
-            else if( param == "cutoff" ) v => g_synth_cutoff;
+            if(      param == "pitch" )      v => g_synth_pitch;
+            else if( param == "cutoff" )     v => g_synth_cutoff;
+            else if( param == "delaysend" )  v => g_synth_delaysend;
+            else if( param == "reverbsend" ) v => g_synth_reverbsend;
         }
         else if( module == "input" )
         {
-            if(      param == "volume" )  v => g_input_volume;
-            else if( param == "source" )  v => g_input_source;
+            if(      param == "volume" )     v => g_input_volume;
+            else if( param == "source" )     v => g_input_source;
+            else if( param == "delaysend" )  v => g_input_delaysend;
+            else if( param == "reverbsend" ) v => g_input_reverbsend;
+        }
+        else if( module == "burst-trigger" )
+        {
+            if(      param == "delaysend" )  v => g_burst_trigger_delaysend;
+            else if( param == "reverbsend" ) v => g_burst_trigger_reverbsend;
+        }
+        else if( module == "delay" )
+        {
+            if(      param == "timeleft" )  v => g_delay_timeleft;
+            else if( param == "timeright" ) v => g_delay_timeright;
+            else if( param == "feedback" )  v => g_delay_feedback;
+            else if( param == "toreverb" )  v => g_delay_toreverb;
+            else if( param == "return" )    v => g_delay_return;
+        }
+        else if( module == "reverb" )
+        {
+            if(      param == "decay" )    v => g_reverb_decay;
+            else if( param == "damping" )  v => g_reverb_damping;
+            else if( param == "predelay" ) v => g_reverb_predelay;
+            else if( param == "size" )     v => g_reverb_size;
+            else if( param == "return" )   v => g_reverb_return;
         }
         else if( module == "aliased-shimmer" )
         {
@@ -189,6 +267,8 @@ while( true )
             else if( param == "lforate4x" ) v => g_aliased_shimmer_lforate4x;
             else if( param == "lforate8x" ) v => g_aliased_shimmer_lforate8x;
             else if( param == "mastervol" ) v => g_aliased_shimmer_mastervol;
+            else if( param == "delaysend" ) v => g_aliased_shimmer_delaysend;
+            else if( param == "reverbsend" ) v => g_aliased_shimmer_reverbsend;
         }
         else if( module == "granulator" )
         {
@@ -206,11 +286,8 @@ while( true )
             else if( param == "thresh" )     v => g_granulator_thresh;
             else if( param == "attack" )     v => g_granulator_attack;
             else if( param == "release" )    v => g_granulator_release;
-            else if( param == "delayleft" )  v => g_granulator_delayleft;
-            else if( param == "delayright" ) v => g_granulator_delayright;
-            else if( param == "feedback" )   v => g_granulator_feedback;
-            else if( param == "delaymix" )   v => g_granulator_delaymix;
-            else if( param == "reverbmix" )  v => g_granulator_reverbmix;
+            else if( param == "delaysend" )  v => g_granulator_delaysend;
+            else if( param == "reverbsend" ) v => g_granulator_reverbsend;
             else if( param == "mastervol" )  v => g_granulator_mastervol;
         }
         // else: unknown module/param — ignored

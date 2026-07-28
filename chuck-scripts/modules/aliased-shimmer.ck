@@ -35,6 +35,9 @@ global float g_aliased_shimmer_lforate2x;
 global float g_aliased_shimmer_lforate4x;
 global float g_aliased_shimmer_lforate8x;
 global float g_aliased_shimmer_mastervol;
+// how much of this module to send into the shared delay/reverb buses
+global float g_aliased_shimmer_delaysend;
+global float g_aliased_shimmer_reverbsend;
 
 // ===== CONSTANTS =====
 60::second => dur MAX_BUF;       // longest single hold-to-record we can capture (1 min)
@@ -63,6 +66,23 @@ masterR => dac.right;
 bufA.chan(0) => masterL;  bufA.chan(1) => masterR;
 bufB.chan(0) => masterL;  bufB.chan(1) => masterR;
 
+// fx sends into the shared delay/reverb buses (core/delay.ck, core/reverb.ck).
+// Tapped post-fader (after masterL/R) so pulling mastervol down fades the tails
+// with it.
+global Gain g_delay_in_l;
+global Gain g_delay_in_r;
+global Gain g_reverb_in_l;
+global Gain g_reverb_in_r;
+
+Gain delaySendL, delaySendR, reverbSendL, reverbSendR;
+0.0 => delaySendL.gain => delaySendR.gain;
+0.0 => reverbSendL.gain => reverbSendR.gain;
+
+masterL => delaySendL  => g_delay_in_l;
+masterR => delaySendR  => g_delay_in_r;
+masterL => reverbSendL => g_reverb_in_l;
+masterR => reverbSendR => g_reverb_in_r;
+
 // double-buffer roles: playBuf loops the last take, recBuf captures the next.
 bufA @=> LiSa2 playBuf;
 bufB @=> LiSa2 recBuf;
@@ -84,6 +104,14 @@ fun float mapF(float g, float lo, float hi) { return lo + g * (hi - lo); }
 // granulator's setMasterVol
 fun void setMasterVol(float val) {
     Math.max(Math.min(val, MASTER_VOL_MAX), MASTER_VOL_MIN) => masterL.gain => masterR.gain;
+}
+
+// fx send amounts, normalized 0..1 straight through to the send gains
+fun void setSends() {
+    Math.max(0.0, Math.min(1.0, g_aliased_shimmer_delaysend))
+        => delaySendL.gain => delaySendR.gain;
+    Math.max(0.0, Math.min(1.0, g_aliased_shimmer_reverbsend))
+        => reverbSendL.gain => reverbSendR.gain;
 }
 
 // apply the per-voice volumes (normalized 0..1) to the playing buffer's voices
@@ -177,6 +205,7 @@ while( true )
     setVoiceVols();
     setVoicePans();
     setMasterVol( mapF(g_aliased_shimmer_mastervol, MASTER_VOL_MIN, MASTER_VOL_MAX) );
+    setSends();
 
     (g_aliased_shimmer_collect > 0.5) => int nowOpen;
     if( nowOpen && !gateOpen ) startRecording();   // rising edge
