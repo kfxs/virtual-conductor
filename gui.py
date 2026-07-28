@@ -22,6 +22,16 @@ import routing_config
 # y = (e^(k·x) − 1)/(e^k − 1)). Higher k = stronger bend. Tune by ear.
 EXP_K = 2.0
 
+# Every window the app opens, grouped for the Windows menu. The titles must
+# match the imgui.begin() calls exactly — that string is how a window is
+# identified, and how the menu focuses it. Performance panels first, since
+# they're the ones being reached for mid-session.
+WINDOW_GROUPS = [
+    ("Performance", ["Live Input", "Virtual Ensemble", "Send FX", "ChucK"]),
+    ("Setup", ["Camera Feed", "Tracking", "Gestures", "Configuration"]),
+]
+WINDOW_TITLES = [title for _group, titles in WINDOW_GROUPS for title in titles]
+
 
 class ConductorGUI:
     def __init__(self, width=1100, height=700, title="Virtual Conductor"):
@@ -81,6 +91,10 @@ class ConductorGUI:
         # Input source selection ("fake-theorbo" or "mic"), persisted separately
         # from the per-param routing state.
         self.input_source = routing_config.load_input_source()
+
+        # Which windows are shown, toggled from the Windows menu. Persisted so a
+        # layout pared down for a performance survives a restart.
+        self.window_visible = routing_config.load_window_visibility(WINDOW_TITLES)
 
         # Last value seen for every landmark, updated each frame from the tracker.
         # Held between frames so a param freezes (rather than snapping to 0) when
@@ -188,6 +202,52 @@ class ConductorGUI:
             "/param/input/source", 1.0 if self.input_source == "mic" else 0.0
         )
 
+    def _begin_window(self, title):
+        """Open a window unless it's been hidden from the Windows menu.
+
+        Returns True if it was opened — the caller then draws its contents and
+        calls imgui.end(). Returns False if hidden, in which case the caller must
+        skip both."""
+        if not self.window_visible.get(title, True):
+            return False
+        imgui.begin(title)
+        return True
+
+    def _render_main_menu_bar(self):
+        """Top menu bar. Each Windows entry is a checkbox that shows/hides the
+        window, plus its name, which pulls it to the front (and un-hides it if it
+        was off). With this many panels they overlap, and dragging them apart
+        every session is worse than a menu.
+
+        Neither action moves or resizes anything, so the layout imgui.ini
+        remembers stays exactly as the user arranged it."""
+        if not imgui.begin_main_menu_bar():
+            return
+        visibility_changed = False
+        if imgui.begin_menu("Windows", True):
+            for i, (group, titles) in enumerate(WINDOW_GROUPS):
+                if i:
+                    imgui.separator()
+                imgui.text_disabled(group)
+                for title in titles:
+                    shown = self.window_visible.get(title, True)
+                    # Checkbox toggles visibility; the name beside it focuses.
+                    changed, shown = imgui.checkbox(f"##show_{title}", shown)
+                    if changed:
+                        self.window_visible[title] = shown
+                        visibility_changed = True
+                    imgui.same_line()
+                    if imgui.menu_item(title)[0]:
+                        if not self.window_visible.get(title, True):
+                            self.window_visible[title] = True
+                            visibility_changed = True
+                        imgui.set_window_focus_labeled(title)
+            imgui.end_menu()
+        imgui.end_main_menu_bar()
+
+        if visibility_changed:
+            routing_config.save_window_visibility(self.window_visible)
+
     def _render_instrument_windows(self):
         """Three windows, split by what each thing actually does:
 
@@ -253,7 +313,8 @@ class ConductorGUI:
         Returns True if any routing value changed (so it gets persisted)."""
         state_changed = False
 
-        imgui.begin(title)
+        if not self._begin_window(title):
+            return False
         if not entries:
             imgui.text_disabled(empty_text)
         else:
@@ -667,61 +728,61 @@ class ConductorGUI:
         return None
 
     def _render_chuck_panel(self):
-        imgui.begin("ChucK")
+        if self._begin_window("ChucK"):
 
-        # Detect if VM died on its own
-        if self.chuck.vm_poll() is not None and self.chuck._vm_proc is not None:
-            self.chuck.log.append(f"[VM] Exited with code {self.chuck.vm_returncode}")
-            self.chuck._vm_proc = None
-            self.chuck._shred_ids.clear()
+            # Detect if VM died on its own
+            if self.chuck.vm_poll() is not None and self.chuck._vm_proc is not None:
+                self.chuck.log.append(f"[VM] Exited with code {self.chuck.vm_returncode}")
+                self.chuck._vm_proc = None
+                self.chuck._shred_ids.clear()
 
-        # --- VM control ---
-        if self.chuck.vm_running:
-            imgui.text_colored("● VM", 0.3, 1.0, 0.3)
-            imgui.same_line()
-            if imgui.button("Stop VM"):
-                self.chuck.stop_vm()
-        else:
-            imgui.text_colored("○ VM", 0.6, 0.6, 0.6)
-            imgui.same_line()
-            if imgui.button("Start VM"):
-                self.chuck.start_vm()
-
-        imgui.separator()
-
-        # --- Per-effect toggles ---
-        for name in self.chuck.effects:
-            is_active = self.chuck.is_active(name)
-            has_id    = self.chuck.has_id(name)
-
-            if is_active:
-                color = (0.3, 1.0, 0.3) if has_id else (1.0, 0.8, 0.2)  # green / yellow while pending
-                imgui.text_colored(f"● {name}", *color)
+            # --- VM control ---
+            if self.chuck.vm_running:
+                imgui.text_colored("● VM", 0.3, 1.0, 0.3)
                 imgui.same_line()
-                if has_id:
-                    if imgui.button(f"Remove##{name}"):
-                        self.chuck.remove_effect(name)
-                else:
-                    imgui.text_disabled("pending...")
+                if imgui.button("Stop VM"):
+                    self.chuck.stop_vm()
             else:
-                imgui.text_colored(f"○ {name}", 0.6, 0.6, 0.6)
+                imgui.text_colored("○ VM", 0.6, 0.6, 0.6)
                 imgui.same_line()
-                if self.chuck.vm_running:
-                    if imgui.button(f"Add##{name}"):
-                        self.chuck.add_effect(name)
+                if imgui.button("Start VM"):
+                    self.chuck.start_vm()
+
+            imgui.separator()
+
+            # --- Per-effect toggles ---
+            for name in self.chuck.effects:
+                is_active = self.chuck.is_active(name)
+                has_id    = self.chuck.has_id(name)
+
+                if is_active:
+                    color = (0.3, 1.0, 0.3) if has_id else (1.0, 0.8, 0.2)  # green / yellow while pending
+                    imgui.text_colored(f"● {name}", *color)
+                    imgui.same_line()
+                    if has_id:
+                        if imgui.button(f"Remove##{name}"):
+                            self.chuck.remove_effect(name)
+                    else:
+                        imgui.text_disabled("pending...")
                 else:
-                    imgui.text_disabled("--")
+                    imgui.text_colored(f"○ {name}", 0.6, 0.6, 0.6)
+                    imgui.same_line()
+                    if self.chuck.vm_running:
+                        if imgui.button(f"Add##{name}"):
+                            self.chuck.add_effect(name)
+                    else:
+                        imgui.text_disabled("--")
 
-        imgui.separator()
+            imgui.separator()
 
-        # --- Log ---
-        imgui.begin_child("chuck_log", 0, 150, border=True)
-        for line in list(self.chuck.log):
-            imgui.text(line)
-        imgui.set_scroll_here_y(1.0)
-        imgui.end_child()
+            # --- Log ---
+            imgui.begin_child("chuck_log", 0, 150, border=True)
+            for line in list(self.chuck.log):
+                imgui.text(line)
+            imgui.set_scroll_here_y(1.0)
+            imgui.end_child()
 
-        imgui.end()
+            imgui.end()
 
     def _create_texture(self):
         texture_id = gl.glGenTextures(1)
@@ -777,183 +838,185 @@ class ConductorGUI:
 
         imgui.new_frame()
 
+        self._render_main_menu_bar()
+
         # --- Camera Feed ---
-        imgui.begin("Camera Feed")
-        if camera_warning:
-            imgui.text_colored(camera_warning, 1.0, 0.3, 0.3)
-        imgui.image(self.video_texture, vid_w, vid_h)
-        imgui.end()
+        if self._begin_window("Camera Feed"):
+            if camera_warning:
+                imgui.text_colored(camera_warning, 1.0, 0.3, 0.3)
+            imgui.image(self.video_texture, vid_w, vid_h)
+            imgui.end()
 
         # --- Configuration (MIDI + OSC) ---
-        imgui.begin("Configuration")
+        if self._begin_window("Configuration"):
 
-        midi_hdr = imgui.collapsing_header("MIDI", flags=imgui.TREE_NODE_DEFAULT_OPEN)
-        if (midi_hdr[0] if isinstance(midi_hdr, tuple) else midi_hdr):
-            # Device dropdown. The list is re-scanned on Refresh (and at startup),
-            # not every frame — enumerating hardware each frame is wasteful.
-            imgui.text("Device")
-            imgui.same_line()
-            imgui.set_next_item_width(220)
-            changed, self.midi_port_index = imgui.combo(
-                "##midi_device", self.midi_port_index, self.midi_ports
-            )
-            if changed:
-                port = self.midi_ports[self.midi_port_index]
-                self.midi.select(port)
-                routing_config.save_midi_port(port)
-            imgui.same_line()
-            if imgui.button("Refresh"):
-                self._refresh_midi_ports()
+            midi_hdr = imgui.collapsing_header("MIDI", flags=imgui.TREE_NODE_DEFAULT_OPEN)
+            if (midi_hdr[0] if isinstance(midi_hdr, tuple) else midi_hdr):
+                # Device dropdown. The list is re-scanned on Refresh (and at startup),
+                # not every frame — enumerating hardware each frame is wasteful.
+                imgui.text("Device")
+                imgui.same_line()
+                imgui.set_next_item_width(220)
+                changed, self.midi_port_index = imgui.combo(
+                    "##midi_device", self.midi_port_index, self.midi_ports
+                )
+                if changed:
+                    port = self.midi_ports[self.midi_port_index]
+                    self.midi.select(port)
+                    routing_config.save_midi_port(port)
+                imgui.same_line()
+                if imgui.button("Refresh"):
+                    self._refresh_midi_ports()
 
-            # Live monitor of incoming messages, with a Clear button.
-            imgui.text("Incoming")
-            imgui.same_line()
-            if imgui.small_button("Clear"):
-                self.midi.clear_log()
-            # Snapshot the deque before iterating — the mido callback appends to
-            # it from a background thread.
-            imgui.begin_child("midi_log", 0, 150, border=True)
-            for line in list(self.midi.log):
-                imgui.text(line)
-            imgui.set_scroll_here_y(1.0)
-            imgui.end_child()
+                # Live monitor of incoming messages, with a Clear button.
+                imgui.text("Incoming")
+                imgui.same_line()
+                if imgui.small_button("Clear"):
+                    self.midi.clear_log()
+                # Snapshot the deque before iterating — the mido callback appends to
+                # it from a background thread.
+                imgui.begin_child("midi_log", 0, 150, border=True)
+                for line in list(self.midi.log):
+                    imgui.text(line)
+                imgui.set_scroll_here_y(1.0)
+                imgui.end_child()
 
-        osc_hdr = imgui.collapsing_header("OSC", flags=imgui.TREE_NODE_DEFAULT_OPEN)
-        if (osc_hdr[0] if isinstance(osc_hdr, tuple) else osc_hdr):
-            _, self.osc_enabled = imgui.checkbox("Enabled", self.osc_enabled)
-            imgui.set_next_item_width(140)
-            _, self.osc_ip_buf = imgui.input_text("IP", self.osc_ip_buf, 64)
-            imgui.set_next_item_width(80)
-            _, self.osc_port_buf = imgui.input_text("Port", self.osc_port_buf, 8)
+            osc_hdr = imgui.collapsing_header("OSC", flags=imgui.TREE_NODE_DEFAULT_OPEN)
+            if (osc_hdr[0] if isinstance(osc_hdr, tuple) else osc_hdr):
+                _, self.osc_enabled = imgui.checkbox("Enabled", self.osc_enabled)
+                imgui.set_next_item_width(140)
+                _, self.osc_ip_buf = imgui.input_text("IP", self.osc_ip_buf, 64)
+                imgui.set_next_item_width(80)
+                _, self.osc_port_buf = imgui.input_text("Port", self.osc_port_buf, 8)
 
-        imgui.end()
+            imgui.end()
 
         # --- Tracking ---
-        imgui.begin("Tracking")
+        if self._begin_window("Tracking"):
 
-        _, self.active_hands = imgui.checkbox("Hands", self.active_hands)
-        imgui.same_line()
-        _, self.active_face = imgui.checkbox("Face", self.active_face)
-        imgui.same_line()
-        _, self.active_pose = imgui.checkbox("Pose", self.active_pose)
+            _, self.active_hands = imgui.checkbox("Hands", self.active_hands)
+            imgui.same_line()
+            _, self.active_face = imgui.checkbox("Face", self.active_face)
+            imgui.same_line()
+            _, self.active_pose = imgui.checkbox("Pose", self.active_pose)
 
-        imgui.separator()
+            imgui.separator()
 
-        digits = [("Thumb", 4), ("Index", 8), ("Mid", 12), ("Ring", 16), ("Pinky", 20)]
+            digits = [("Thumb", 4), ("Index", 8), ("Mid", 12), ("Ring", 16), ("Pinky", 20)]
 
-        # Left Hand
-        imgui.text_colored("LEFT HAND", 0.4, 0.8, 1.0)
-        if not self.active_hands:
-            imgui.text("[OFF]")
-        elif results["left_hand"]:
-            for name, idx in digits:
-                pt = results["left_hand"][idx]
-                imgui.text(f"  {name}: {pt.x:.2f}, {pt.y:.2f}")
-        else:
-            imgui.text("  No Detection")
+            # Left Hand
+            imgui.text_colored("LEFT HAND", 0.4, 0.8, 1.0)
+            if not self.active_hands:
+                imgui.text("[OFF]")
+            elif results["left_hand"]:
+                for name, idx in digits:
+                    pt = results["left_hand"][idx]
+                    imgui.text(f"  {name}: {pt.x:.2f}, {pt.y:.2f}")
+            else:
+                imgui.text("  No Detection")
 
-        imgui.spacing()
+            imgui.spacing()
 
-        # Right Hand
-        imgui.text_colored("RIGHT HAND", 0.4, 1.0, 0.4)
-        if not self.active_hands:
-            imgui.text("[OFF]")
-        elif results["right_hand"]:
-            for name, idx in digits:
-                pt = results["right_hand"][idx]
-                imgui.text(f"  {name}: {pt.x:.2f}, {pt.y:.2f}")
-        else:
-            imgui.text("  No Detection")
+            # Right Hand
+            imgui.text_colored("RIGHT HAND", 0.4, 1.0, 0.4)
+            if not self.active_hands:
+                imgui.text("[OFF]")
+            elif results["right_hand"]:
+                for name, idx in digits:
+                    pt = results["right_hand"][idx]
+                    imgui.text(f"  {name}: {pt.x:.2f}, {pt.y:.2f}")
+            else:
+                imgui.text("  No Detection")
 
-        imgui.spacing()
+            imgui.spacing()
 
-        # Face
-        imgui.text_colored("FACE", 1.0, 1.0, 0.4)
-        if not self.active_face:
-            imgui.text("[OFF]")
-        elif results["face"]:
-            face = results["face"].face_landmarks[0]
-            nose = face[1]
-            imgui.text(f"  Nose: {nose.x:.2f}, {nose.y:.2f}")
-            eye_l = face[33]
-            eye_r = face[263]
-            imgui.text(f"  L-Eye: {eye_l.x:.2f}, {eye_l.y:.2f}")
-            imgui.text(f"  R-Eye: {eye_r.x:.2f}, {eye_r.y:.2f}")
-            m_x = (face[13].x + face[14].x) / 2
-            m_y = (face[13].y + face[14].y) / 2
-            imgui.text(f"  Mouth: {m_x:.2f}, {m_y:.2f}")
-        else:
-            imgui.text("  No Detection")
+            # Face
+            imgui.text_colored("FACE", 1.0, 1.0, 0.4)
+            if not self.active_face:
+                imgui.text("[OFF]")
+            elif results["face"]:
+                face = results["face"].face_landmarks[0]
+                nose = face[1]
+                imgui.text(f"  Nose: {nose.x:.2f}, {nose.y:.2f}")
+                eye_l = face[33]
+                eye_r = face[263]
+                imgui.text(f"  L-Eye: {eye_l.x:.2f}, {eye_l.y:.2f}")
+                imgui.text(f"  R-Eye: {eye_r.x:.2f}, {eye_r.y:.2f}")
+                m_x = (face[13].x + face[14].x) / 2
+                m_y = (face[13].y + face[14].y) / 2
+                imgui.text(f"  Mouth: {m_x:.2f}, {m_y:.2f}")
+            else:
+                imgui.text("  No Detection")
 
-        imgui.end()
+            imgui.end()
 
         # --- Gesture Panel ---
-        imgui.begin("Gestures")
+        if self._begin_window("Gestures"):
 
-        # Live recognition display
-        rh_gesture = results.get("gesture", {}).get("right_hand")
-        rh_conf = results.get("gesture_confidence", {}).get("right_hand", 0.0)
-        if rh_gesture:
-            imgui.text_colored(f"Right Hand: {rh_gesture} ({int(rh_conf * 100)}%)", 0.4, 1.0, 0.4)
-        else:
-            imgui.text("Right Hand: ---")
-
-        imgui.separator()
-
-        # Collection controls
-        imgui.text("Collect Data")
-        changed, self.gesture_label_buf = imgui.input_text("Label", self.gesture_label_buf, 64)
-
-        status = self.gesture_collector.get_status()
-        if status["recording"]:
-            imgui.text_colored(f"Recording: {status['sample_count']} samples", 1.0, 0.3, 0.3)
-            if imgui.button("Stop"):
-                count = self.gesture_collector.stop_recording()
-                self.gesture_train_msg = f"Saved {count} samples"
-        else:
-            label = self.gesture_label_buf.strip()
-            if label and results.get("right_hand"):
-                if imgui.button("Record"):
-                    self.gesture_collector.start_recording(label, "right_hand")
-                    self.gesture_train_msg = ""
+            # Live recognition display
+            rh_gesture = results.get("gesture", {}).get("right_hand")
+            rh_conf = results.get("gesture_confidence", {}).get("right_hand", 0.0)
+            if rh_gesture:
+                imgui.text_colored(f"Right Hand: {rh_gesture} ({int(rh_conf * 100)}%)", 0.4, 1.0, 0.4)
             else:
-                imgui.text_disabled("Enter label + show right hand")
+                imgui.text("Right Hand: ---")
 
-        # Record samples each frame while recording
-        if status["recording"] and results.get("right_hand"):
-            self.gesture_collector.record_sample(results["right_hand"])
+            imgui.separator()
 
-        imgui.spacing()
+            # Collection controls
+            imgui.text("Collect Data")
+            changed, self.gesture_label_buf = imgui.input_text("Label", self.gesture_label_buf, 64)
 
-        # Train button
-        if imgui.button("Train Model"):
-            recognizer = self._get_tracker_recognizer()
-            if recognizer:
-                success, msg = recognizer.train("right_hand")
-                self.gesture_train_msg = msg
+            status = self.gesture_collector.get_status()
+            if status["recording"]:
+                imgui.text_colored(f"Recording: {status['sample_count']} samples", 1.0, 0.3, 0.3)
+                if imgui.button("Stop"):
+                    count = self.gesture_collector.stop_recording()
+                    self.gesture_train_msg = f"Saved {count} samples"
             else:
-                self.gesture_train_msg = "Trainer not available"
+                label = self.gesture_label_buf.strip()
+                if label and results.get("right_hand"):
+                    if imgui.button("Record"):
+                        self.gesture_collector.start_recording(label, "right_hand")
+                        self.gesture_train_msg = ""
+                else:
+                    imgui.text_disabled("Enter label + show right hand")
 
-        if self.gesture_train_msg:
-            imgui.text(self.gesture_train_msg)
+            # Record samples each frame while recording
+            if status["recording"] and results.get("right_hand"):
+                self.gesture_collector.record_sample(results["right_hand"])
 
-        imgui.spacing()
-        imgui.separator()
+            imgui.spacing()
 
-        # Dataset summary
-        summary = self.gesture_collector.get_summary()
-        if summary:
-            imgui.text("Collected gestures:")
-            to_delete = None
-            for (source, label), count in sorted(summary.items()):
-                imgui.text(f"  {source}/{label}: {count}")
-                imgui.same_line()
-                if imgui.small_button(f"X##{source}_{label}"):
-                    to_delete = (label, source)
-            if to_delete:
-                self.gesture_collector.delete_gesture(*to_delete)
+            # Train button
+            if imgui.button("Train Model"):
+                recognizer = self._get_tracker_recognizer()
+                if recognizer:
+                    success, msg = recognizer.train("right_hand")
+                    self.gesture_train_msg = msg
+                else:
+                    self.gesture_train_msg = "Trainer not available"
 
-        imgui.end()
+            if self.gesture_train_msg:
+                imgui.text(self.gesture_train_msg)
+
+            imgui.spacing()
+            imgui.separator()
+
+            # Dataset summary
+            summary = self.gesture_collector.get_summary()
+            if summary:
+                imgui.text("Collected gestures:")
+                to_delete = None
+                for (source, label), count in sorted(summary.items()):
+                    imgui.text(f"  {source}/{label}: {count}")
+                    imgui.same_line()
+                    if imgui.small_button(f"X##{source}_{label}"):
+                        to_delete = (label, source)
+                if to_delete:
+                    self.gesture_collector.delete_gesture(*to_delete)
+
+            imgui.end()
 
         # --- ChucK Panel ---
         self._render_chuck_panel()
@@ -970,11 +1033,12 @@ class ConductorGUI:
 
     def render_no_frame(self, camera_warning=None):
         imgui.new_frame()
-        imgui.begin("Camera Feed")
-        imgui.text("No camera frame available.")
-        if camera_warning:
-            imgui.text_colored(camera_warning, 1.0, 0.3, 0.3)
-        imgui.end()
+        self._render_main_menu_bar()
+        if self._begin_window("Camera Feed"):
+            imgui.text("No camera frame available.")
+            if camera_warning:
+                imgui.text_colored(camera_warning, 1.0, 0.3, 0.3)
+            imgui.end()
         self._render_chuck_panel()
         self._render_instrument_windows()
         imgui.render()

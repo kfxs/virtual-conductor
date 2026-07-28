@@ -31,6 +31,10 @@ INPUT_SOURCE_PATH = os.path.join(CONFIG_DIR, "input_source.json")
 INPUT_SOURCES = ["fake-theorbo", "mic"]
 DEFAULT_INPUT_SOURCE = "fake-theorbo"
 
+# Which windows are shown. Their positions live in imgui.ini, which imgui owns,
+# so visibility gets its own small file beside it.
+WINDOW_VISIBILITY_PATH = os.path.join(CONFIG_DIR, "window_visibility.json")
+
 # All MIDI settings live together in one small file: the selected input device
 # ("None" = listen to nothing) and the burst-trigger's learned control.
 MIDI_CONFIG_PATH = os.path.join(CONFIG_DIR, "midi_config.json")
@@ -257,6 +261,31 @@ def save_input_source(source):
     _ensure_config_dir()
     with open(INPUT_SOURCE_PATH, "w") as f:
         json.dump({"source": source}, f, indent=2)
+
+
+def load_window_visibility(titles):
+    """Return {window title: shown?} for every title given, defaulting to shown.
+
+    Window *positions* already persist via imgui.ini, so which windows are open
+    persists too — otherwise a layout stripped down for a performance would come
+    back cluttered on the next launch."""
+    data = {}
+    if os.path.exists(WINDOW_VISIBILITY_PATH):
+        try:
+            with open(WINDOW_VISIBILITY_PATH) as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+        except (ValueError, OSError):
+            pass  # corrupt/unreadable -> everything shown
+    return {title: bool(data.get(title, True)) for title in titles}
+
+
+def save_window_visibility(visibility):
+    """Persist {window title: shown?}."""
+    _ensure_config_dir()
+    with open(WINDOW_VISIBILITY_PATH, "w") as f:
+        json.dump(visibility, f, indent=2)
 
 
 def _read_midi_config():
