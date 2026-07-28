@@ -74,9 +74,10 @@ MODULE_PARAMS = {
     # reverbed without going through a module. The source choice (fake-theorbo
     # vs mic) persists separately.
     "input": [
-        ("volume",     "hand_left_index_y"),
         ("delaysend",  "hand_right_thumb_x"),
         ("reverbsend", "hand_left_thumb_x"),
+        # output — the monitor volume sits last, like every module's mastervol
+        ("volume",     "hand_left_index_y"),
     ],
     # Burst-trigger: no sound-shaping params (it's a one-shot noise burst fired
     # by a button), just the fx sends. Rendered under its Fire button.
@@ -92,16 +93,18 @@ MODULE_PARAMS = {
         ("timeright", "hand_left_index_x"),
         ("feedback",  "hand_right_middle_x"),
         ("toreverb",  "hand_left_middle_x"),
-        ("return",    "hand_right_pinky_z"),
+        # output — the bus's own level, this module's equivalent of mastervol
+        ("returnvol", "hand_right_pinky_z"),
     ],
     # Reverb: the shared reverb bus, a core shred. Everything that reaches it
     # arrives via a module's reverbsend or the delay's toreverb.
     "reverb": [
-        ("decay",    "hand_right_index_x"),
-        ("damping",  "hand_left_index_x"),
-        ("predelay", "hand_right_middle_x"),
-        ("size",     "hand_left_middle_x"),
-        ("return",   "hand_right_pinky_z"),
+        ("decay",     "hand_right_index_x"),
+        ("damping",   "hand_left_index_x"),
+        ("predelay",  "hand_right_middle_x"),
+        ("size",      "hand_left_middle_x"),
+        # output — the bus's own level, this module's equivalent of mastervol
+        ("returnvol", "hand_right_pinky_z"),
     ],
     # Granulator: every param exposed. The landmark is only the default used if
     # the user switches that param to landmark mode — all start on the slider.
@@ -141,16 +144,22 @@ MODULE_PARAMS = {
         ("lforate2x", "hand_right_middle_x"),
         ("lforate4x", "hand_right_ring_x"),
         ("lforate8x", "hand_right_pinky_x"),
-        ("mastervol", "hand_right_pinky_z"),
         # fx sends into the shared delay/reverb buses
         ("delaysend",  "hand_left_index_x"),
         ("reverbsend", "hand_left_middle_x"),
+        # output
+        ("mastervol", "hand_right_pinky_z"),
     ],
 }
 
 # Modules that are core shreds — always running, never added/removed via the
 # effects list. The GUI shows their sections whenever the VM is up.
 CORE_MODULES = ["input", "delay", "reverb"]
+
+# The shared fx buses, which get their own GUI window. They process what they
+# are sent rather than making sound of their own, so they don't belong with the
+# ensemble modules.
+SEND_FX_MODULES = ["delay", "reverb"]
 
 # Per-param starting slider positions, for the params where the global 0.5
 # default would be wrong. Keyed by (module, param).

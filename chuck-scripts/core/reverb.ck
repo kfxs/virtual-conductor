@@ -126,7 +126,7 @@ global float g_reverb_decay;
 global float g_reverb_damping;
 global float g_reverb_predelay;
 global float g_reverb_size;
-global float g_reverb_return;
+global float g_reverb_returnvol;
 
 // comb feedback gain — must stay below 1.0 or the tail never dies
 0.70  => float DECAY_MIN;      0.95  => float DECAY_MAX;
@@ -153,7 +153,7 @@ fun void apply()
     expMapF(clampN(g_reverb_damping),  DAMP_BRIGHT,   DAMP_DARK )   => float cutoff;
     mapF(   clampN(g_reverb_size),     SIZE_MIN,      SIZE_MAX )    => float size;
     mapD(   clampN(g_reverb_predelay), PREDELAY_MIN,  PREDELAY_MAX) => dur   pre;
-    mapF(   clampN(g_reverb_return),   RETURN_MIN,    RETURN_MAX )  => float ret;
+    mapF(   clampN(g_reverb_returnvol),   RETURN_MIN,    RETURN_MAX )  => float ret;
 
     pre => preL.delay;
     pre => preR.delay;

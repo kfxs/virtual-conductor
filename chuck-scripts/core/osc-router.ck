@@ -25,13 +25,13 @@ global float g_delay_timeleft;    // left channel delay time
 global float g_delay_timeright;   // right channel delay time
 global float g_delay_feedback;
 global float g_delay_toreverb;   // the delay's own send into the reverb
-global float g_delay_return;
+global float g_delay_returnvol;
 
 global float g_reverb_decay;
 global float g_reverb_damping;
 global float g_reverb_predelay;
 global float g_reverb_size;
-global float g_reverb_return;
+global float g_reverb_returnvol;
 
 // per-source send amounts
 global float g_input_delaysend;
@@ -139,13 +139,13 @@ global float g_granulator_mastervol;
 0.37 => g_delay_timeright;    // ~400 ms
 0.5  => g_delay_feedback;
 0.0  => g_delay_toreverb;
-0.5  => g_delay_return;       // 0.5 -> unity
+0.5  => g_delay_returnvol;       // 0.5 -> unity
 
 0.5 => g_reverb_decay;
 0.5 => g_reverb_damping;
 0.0 => g_reverb_predelay;
 0.5 => g_reverb_size;
-0.5 => g_reverb_return;       // 0.5 -> unity
+0.5 => g_reverb_returnvol;       // 0.5 -> unity
 
 0.0 => g_input_delaysend;
 0.0 => g_input_reverbsend;
@@ -246,7 +246,7 @@ while( true )
             else if( param == "timeright" ) v => g_delay_timeright;
             else if( param == "feedback" )  v => g_delay_feedback;
             else if( param == "toreverb" )  v => g_delay_toreverb;
-            else if( param == "return" )    v => g_delay_return;
+            else if( param == "returnvol" ) v => g_delay_returnvol;
         }
         else if( module == "reverb" )
         {
@@ -254,7 +254,7 @@ while( true )
             else if( param == "damping" )  v => g_reverb_damping;
             else if( param == "predelay" ) v => g_reverb_predelay;
             else if( param == "size" )     v => g_reverb_size;
-            else if( param == "return" )   v => g_reverb_return;
+            else if( param == "returnvol" ) v => g_reverb_returnvol;
         }
         else if( module == "aliased-shimmer" )
         {

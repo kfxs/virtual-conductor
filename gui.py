@@ -189,148 +189,186 @@ class ConductorGUI:
         )
 
     def _render_instrument_windows(self):
-        """One 'ChucK Scripts' window with a collapsible section per *active*
-        instrument, so the panel only shows what's currently loaded in the VM."""
-        state_changed = False
+        """Three windows, split by what each thing actually does:
 
-        imgui.begin("Active ChucK Scripts")
+          Live Input        — the player's own instrument coming in
+          Virtual Ensemble  — everything that plays alongside the performer
+          Send FX           — the shared delay/reverb buses the rest send into
 
-        # MODULE_PARAMS keys are lowercase ("synth"); ChucK effect names are
-        # capitalized ("Synth"). The core shreds — the input source and the
-        # shared delay/reverb buses — are always running rather than add/remove
-        # effects, so they show whenever the VM runs; other instruments appear
-        # only once added to the VM.
+        Live Input and the fx buses are core shreds, so they show whenever the
+        VM is up; ensemble modules appear only once added to the VM.
+        """
+        vm = self.chuck.vm_running
+        params_of = routing_config.MODULE_PARAMS
         core = routing_config.CORE_MODULES
-        active = []
-        if self.chuck.vm_running:
-            active += [
-                (module, routing_config.MODULE_PARAMS[module])
-                for module in core
-                if module in routing_config.MODULE_PARAMS
-            ]
-        active += [
+        send_fx = routing_config.SEND_FX_MODULES
+
+        input_entries = (
+            [("input", params_of["input"])] if vm and "input" in params_of else []
+        )
+        fx_entries = (
+            [(m, params_of[m]) for m in send_fx if m in params_of] if vm else []
+        )
+        # MODULE_PARAMS keys are lowercase ("synth"); ChucK effect names are
+        # capitalized ("Synth"). burst-trigger is appended last so its Fire
+        # button sits at the bottom of the ensemble.
+        ensemble_entries = [
             (module, params)
-            for module, params in routing_config.MODULE_PARAMS.items()
+            for module, params in params_of.items()
             if module not in core
             and module != "burst-trigger"
             and self.chuck.is_active(module.capitalize())
         ]
-        # burst-trigger is a trigger module: a Fire button in place of the usual
-        # sound-shaping params, with only its fx sends rendered below it.
         if self.chuck.is_active("Burst-trigger"):
-            active.append(
-                ("burst-trigger", routing_config.MODULE_PARAMS.get("burst-trigger", []))
+            ensemble_entries.append(
+                ("burst-trigger", params_of.get("burst-trigger", []))
             )
 
-        if not active:
-            imgui.text_disabled("No instruments active.")
-        else:
-            for module, params in active:
-                # The triangle on a collapsing header minimizes/expands the section.
-                # Theorbo is the input source — show it as "Input".
-                label = "Input" if module == "input" else module.capitalize()
-                header = imgui.collapsing_header(
-                    label, flags=imgui.TREE_NODE_DEFAULT_OPEN
-                )
-                expanded = header[0] if isinstance(header, tuple) else header
-                if not expanded:
-                    continue
-                if module == "burst-trigger":
-                    # Trigger module: a Fire button in place of param sliders,
-                    # plus MIDI-learn. Fire is an action button; learn/clear are
-                    # link-style text so they read as a different kind of thing.
-                    if imgui.button("Fire##burst"):
-                        self.fire_burst()
-                    imgui.same_line()
-                    if self._midi_learn_burst:
-                        # Waiting for a pad press; click again to cancel. The
-                        # actual capture happens in the mido callback, which
-                        # clears the flag and the link reverts next frame.
-                        if self._link_text("learning... (cancel)", (1.0, 0.8, 0.2)):
-                            self._midi_learn_burst = False
-                    else:
-                        if self.burst_midi_binding is not None:
-                            imgui.text_disabled(
-                                self._binding_label(self.burst_midi_binding)
-                            )
-                            imgui.same_line()
-                        if self._link_text("learn", (0.4, 0.7, 1.0)):
-                            self._midi_learn_burst = True
-                        if self.burst_midi_binding is not None:
-                            imgui.same_line()
-                            if self._link_text("clear", (0.4, 0.7, 1.0)):
-                                self.burst_midi_binding = None
-                                routing_config.save_burst_binding(None)
-                    # fx sends below the Fire row, rendered like any other
-                    # instrument's routing rows.
-                    if params and self._render_instrument_section(module, params):
-                        state_changed = True
-                elif module == "aliased-shimmer":
-                    # Gate module: Collect is held = 1, released = 0. We read the
-                    # button's held state (is_item_active) each frame rather than
-                    # its click, so the gate tracks press AND release. learn/clear
-                    # are link-style text, mirroring the burst Fire row — but the
-                    # learned pad gates on note-on/note-off, not a one-shot fire.
-                    imgui.button("Collect##aliased")
-                    self._collect_gate_mouse = imgui.is_item_active()
-                    self._update_collect_gate()
-                    imgui.same_line()
-                    if self._midi_learn_collect:
-                        # Waiting for a pad press; click again to cancel. The
-                        # capture happens in the mido callback, which clears the
-                        # flag and the link reverts next frame.
-                        if self._link_text("learning... (cancel)", (1.0, 0.8, 0.2)):
-                            self._midi_learn_collect = False
-                    else:
-                        if self.collect_midi_binding is not None:
-                            imgui.text_disabled(
-                                self._binding_label(self.collect_midi_binding)
-                            )
-                            imgui.same_line()
-                        if self._link_text("learn", (0.4, 0.7, 1.0)):
-                            self._midi_learn_collect = True
-                        if self.collect_midi_binding is not None:
-                            imgui.same_line()
-                            if self._link_text("clear", (0.4, 0.7, 1.0)):
-                                self.collect_midi_binding = None
-                                routing_config.save_collect_binding(None)
-                    # Clear is a one-shot trigger (not a gate): the button's click
-                    # fires it once; the ChucK side sees the 0->1 edge and acts.
-                    # learn/clear mirror the burst Fire row — the learned pad fires
-                    # the clear on its onset.
-                    if imgui.button("Clear##aliased"):
-                        self.fire_clear()
-                    imgui.same_line()
-                    if self._midi_learn_clear:
-                        if self._link_text("learning... (cancel)", (1.0, 0.8, 0.2)):
-                            self._midi_learn_clear = False
-                    else:
-                        if self.clear_midi_binding is not None:
-                            imgui.text_disabled(
-                                self._binding_label(self.clear_midi_binding)
-                            )
-                            imgui.same_line()
-                        if self._link_text("learn", (0.4, 0.7, 1.0)):
-                            self._midi_learn_clear = True
-                        if self.clear_midi_binding is not None:
-                            imgui.same_line()
-                            if self._link_text("clear", (0.4, 0.7, 1.0)):
-                                self.clear_midi_binding = None
-                                routing_config.save_clear_binding(None)
-                    # Master volume (and any future params) below the buttons,
-                    # rendered like the other instruments' routing rows.
-                    if self._render_instrument_section(module, params):
-                        state_changed = True
-                elif self._render_instrument_section(module, params):
-                    state_changed = True
-
-        imgui.end()
+        state_changed = False
+        # The Live Input window holds a single section named after the window
+        # itself, so it skips the collapsing header it would only duplicate.
+        if self._render_module_window(
+            "Live Input", input_entries,
+            "Start the ChucK VM to control the input.",
+            headers=False,
+        ):
+            state_changed = True
+        if self._render_module_window(
+            "Virtual Ensemble", ensemble_entries, "No ensemble modules active."
+        ):
+            state_changed = True
+        if self._render_module_window(
+            "Send FX", fx_entries, "Start the ChucK VM to control the send FX."
+        ):
+            state_changed = True
 
         if state_changed:
             routing_config.save_state(self.routing_state)
 
         # Push each param's resolved value (slider or landmark) to ChucK.
         self._send_routing_osc()
+
+    def _render_module_window(self, title, entries, empty_text, headers=True):
+        """Render one window holding a collapsible section per entry.
+        Returns True if any routing value changed (so it gets persisted)."""
+        state_changed = False
+
+        imgui.begin(title)
+        if not entries:
+            imgui.text_disabled(empty_text)
+        else:
+            for module, params in entries:
+                if headers:
+                    # The triangle on a collapsing header minimizes/expands the
+                    # section.
+                    label = module.capitalize()
+                    header = imgui.collapsing_header(
+                        label, flags=imgui.TREE_NODE_DEFAULT_OPEN
+                    )
+                    expanded = header[0] if isinstance(header, tuple) else header
+                    if not expanded:
+                        continue
+                if self._render_module_body(module, params):
+                    state_changed = True
+        imgui.end()
+
+        return state_changed
+
+    def _render_module_body(self, module, params):
+        """Render one module's controls: its buttons, if it has any, then its
+        param rows. Returns True if any routing value changed."""
+        state_changed = False
+
+        if module == "burst-trigger":
+            # Trigger module: a Fire button in place of param sliders,
+            # plus MIDI-learn. Fire is an action button; learn/clear are
+            # link-style text so they read as a different kind of thing.
+            if imgui.button("Fire##burst"):
+                self.fire_burst()
+            imgui.same_line()
+            if self._midi_learn_burst:
+                # Waiting for a pad press; click again to cancel. The
+                # actual capture happens in the mido callback, which
+                # clears the flag and the link reverts next frame.
+                if self._link_text("learning... (cancel)", (1.0, 0.8, 0.2)):
+                    self._midi_learn_burst = False
+            else:
+                if self.burst_midi_binding is not None:
+                    imgui.text_disabled(
+                        self._binding_label(self.burst_midi_binding)
+                    )
+                    imgui.same_line()
+                if self._link_text("learn", (0.4, 0.7, 1.0)):
+                    self._midi_learn_burst = True
+                if self.burst_midi_binding is not None:
+                    imgui.same_line()
+                    if self._link_text("clear", (0.4, 0.7, 1.0)):
+                        self.burst_midi_binding = None
+                        routing_config.save_burst_binding(None)
+            # fx sends below the Fire row, rendered like any other
+            # instrument's routing rows.
+            if params and self._render_instrument_section(module, params):
+                state_changed = True
+        elif module == "aliased-shimmer":
+            # Gate module: Collect is held = 1, released = 0. We read the
+            # button's held state (is_item_active) each frame rather than
+            # its click, so the gate tracks press AND release. learn/clear
+            # are link-style text, mirroring the burst Fire row — but the
+            # learned pad gates on note-on/note-off, not a one-shot fire.
+            imgui.button("Collect##aliased")
+            self._collect_gate_mouse = imgui.is_item_active()
+            self._update_collect_gate()
+            imgui.same_line()
+            if self._midi_learn_collect:
+                # Waiting for a pad press; click again to cancel. The
+                # capture happens in the mido callback, which clears the
+                # flag and the link reverts next frame.
+                if self._link_text("learning... (cancel)", (1.0, 0.8, 0.2)):
+                    self._midi_learn_collect = False
+            else:
+                if self.collect_midi_binding is not None:
+                    imgui.text_disabled(
+                        self._binding_label(self.collect_midi_binding)
+                    )
+                    imgui.same_line()
+                if self._link_text("learn", (0.4, 0.7, 1.0)):
+                    self._midi_learn_collect = True
+                if self.collect_midi_binding is not None:
+                    imgui.same_line()
+                    if self._link_text("clear", (0.4, 0.7, 1.0)):
+                        self.collect_midi_binding = None
+                        routing_config.save_collect_binding(None)
+            # Clear is a one-shot trigger (not a gate): the button's click
+            # fires it once; the ChucK side sees the 0->1 edge and acts.
+            # learn/clear mirror the burst Fire row — the learned pad fires
+            # the clear on its onset.
+            if imgui.button("Clear##aliased"):
+                self.fire_clear()
+            imgui.same_line()
+            if self._midi_learn_clear:
+                if self._link_text("learning... (cancel)", (1.0, 0.8, 0.2)):
+                    self._midi_learn_clear = False
+            else:
+                if self.clear_midi_binding is not None:
+                    imgui.text_disabled(
+                        self._binding_label(self.clear_midi_binding)
+                    )
+                    imgui.same_line()
+                if self._link_text("learn", (0.4, 0.7, 1.0)):
+                    self._midi_learn_clear = True
+                if self.clear_midi_binding is not None:
+                    imgui.same_line()
+                    if self._link_text("clear", (0.4, 0.7, 1.0)):
+                        self.clear_midi_binding = None
+                        routing_config.save_clear_binding(None)
+            # Master volume (and any future params) below the buttons,
+            # rendered like the other instruments' routing rows.
+            if self._render_instrument_section(module, params):
+                state_changed = True
+        elif self._render_instrument_section(module, params):
+            state_changed = True
+
+        return state_changed
 
     def _render_instrument_section(self, module, params):
         """Render one instrument's param rows.

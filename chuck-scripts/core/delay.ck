@@ -57,7 +57,7 @@ global float g_delay_timeleft;    // left channel delay time
 global float g_delay_timeright;   // right channel delay time
 global float g_delay_feedback;
 global float g_delay_toreverb;
-global float g_delay_return;
+global float g_delay_returnvol;
 
 50::ms => dur DELAY_TIME_MIN;   1000::ms => dur DELAY_TIME_MAX;
 0.0 => float FEEDBACK_MIN;      0.95 => float FEEDBACK_MAX;   // < 1 or it runs away
@@ -85,7 +85,7 @@ fun void apply()
     send => toRevL.gain;
     send => toRevR.gain;
 
-    mapF( clampN(g_delay_return), RETURN_MIN, RETURN_MAX ) => float ret;
+    mapF( clampN(g_delay_returnvol), RETURN_MIN, RETURN_MAX ) => float ret;
     ret => returnL.gain;
     ret => returnR.gain;
 }
